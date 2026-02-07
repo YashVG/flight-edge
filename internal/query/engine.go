@@ -1,6 +1,7 @@
 package query
 
 import (
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -162,6 +163,191 @@ type WeatherInfo struct {
 	Visibility  float64
 	Temperature float64
 	ObservedAt  time.Time
+}
+
+// ---------------------------------------------------------------------------
+// Airport Congestion Prediction (derived from ontology graph)
+// ---------------------------------------------------------------------------
+
+// CongestionSnapshot captures airport flight counts at a point in time.
+type CongestionSnapshot struct {
+	Timestamp   time.Time `json:"timestamp"`
+	FlightCount int       `json:"flight_count"`
+	OnGround    int       `json:"on_ground"`
+	Airborne    int       `json:"airborne"`
+}
+
+// AirportCongestion holds the current congestion state and prediction for an airport.
+type AirportCongestion struct {
+	Code           string               `json:"code"`
+	Name           string               `json:"name"`
+	FlightCount    int                  `json:"flight_count"`
+	OnGround       int                  `json:"on_ground"`
+	Airborne       int                  `json:"airborne"`
+	Level          string               `json:"level"`            // "low", "moderate", "high", "critical"
+	Trend          string               `json:"trend"`            // "increasing", "stable", "decreasing"
+	PredictedLevel string               `json:"predicted_level"`  // predicted level in 10 min
+	PredictedCount int                  `json:"predicted_count"`
+	AvgCount       float64              `json:"avg_count"`
+	PeakCount      int                  `json:"peak_count"`
+	History        []CongestionSnapshot `json:"history"`
+}
+
+// CongestionTracker maintains a sliding window of flight counts per airport.
+type CongestionTracker struct {
+	mu      sync.RWMutex
+	history map[string][]CongestionSnapshot // airport code → sliding window (last 30 snapshots)
+}
+
+// NewCongestionTracker creates a congestion tracker.
+func NewCongestionTracker() *CongestionTracker {
+	return &CongestionTracker{
+		history: make(map[string][]CongestionSnapshot, 64),
+	}
+}
+
+// RecordCongestion appends a snapshot for an airport, trimming to last 30 entries.
+func (ct *CongestionTracker) RecordCongestion(code string, total, onGround, airborne int) {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+
+	snap := CongestionSnapshot{
+		Timestamp:   time.Now(),
+		FlightCount: total,
+		OnGround:    onGround,
+		Airborne:    airborne,
+	}
+
+	ct.history[code] = append(ct.history[code], snap)
+
+	// Trim to last 30 snapshots (~5 min at 10s intervals)
+	if len(ct.history[code]) > 30 {
+		ct.history[code] = ct.history[code][len(ct.history[code])-30:]
+	}
+}
+
+// congestionLevel maps a flight count to a congestion level.
+func congestionLevel(count int) string {
+	switch {
+	case count <= 5:
+		return "low"
+	case count <= 15:
+		return "moderate"
+	case count <= 30:
+		return "high"
+	default:
+		return "critical"
+	}
+}
+
+// GetCongestion returns the current congestion state for an airport.
+func (ct *CongestionTracker) GetCongestion(code, name string) AirportCongestion {
+	ct.mu.RLock()
+	defer ct.mu.RUnlock()
+
+	history := ct.history[code]
+	if len(history) == 0 {
+		return AirportCongestion{
+			Code:           code,
+			Name:           name,
+			Level:          "low",
+			Trend:          "stable",
+			PredictedLevel: "low",
+		}
+	}
+
+	latest := history[len(history)-1]
+
+	// Compute average and peak over window
+	var sum float64
+	peak := 0
+	for _, s := range history {
+		sum += float64(s.FlightCount)
+		if s.FlightCount > peak {
+			peak = s.FlightCount
+		}
+	}
+	avg := sum / float64(len(history))
+
+	// Compute trend: compare recent 6 snapshots vs previous 6
+	trend := "stable"
+	ratePerMinute := 0.0
+	if len(history) >= 12 {
+		recentStart := len(history) - 6
+		prevStart := len(history) - 12
+		var recentSum, prevSum float64
+		for i := recentStart; i < len(history); i++ {
+			recentSum += float64(history[i].FlightCount)
+		}
+		for i := prevStart; i < recentStart; i++ {
+			prevSum += float64(history[i].FlightCount)
+		}
+		recentAvg := recentSum / 6.0
+		prevAvg := prevSum / 6.0
+		diff := recentAvg - prevAvg
+
+		// Compute rate per minute (6 snapshots ≈ 1 minute at 10s interval)
+		ratePerMinute = diff // diff per ~1 minute window
+
+		if diff > 2 {
+			trend = "increasing"
+		} else if diff < -2 {
+			trend = "decreasing"
+		}
+	} else if len(history) >= 4 {
+		// Fewer snapshots: compare last 2 vs first 2
+		recentAvg := float64(history[len(history)-1].FlightCount+history[len(history)-2].FlightCount) / 2.0
+		prevAvg := float64(history[0].FlightCount+history[1].FlightCount) / 2.0
+		diff := recentAvg - prevAvg
+		elapsed := history[len(history)-1].Timestamp.Sub(history[0].Timestamp).Minutes()
+		if elapsed > 0 {
+			ratePerMinute = diff / elapsed
+		}
+		if diff > 2 {
+			trend = "increasing"
+		} else if diff < -2 {
+			trend = "decreasing"
+		}
+	}
+
+	// Predict count in 10 minutes via linear extrapolation
+	predictedCount := latest.FlightCount + int(ratePerMinute*10)
+	if predictedCount < 0 {
+		predictedCount = 0
+	}
+
+	// Copy history for response
+	historyCopy := make([]CongestionSnapshot, len(history))
+	copy(historyCopy, history)
+
+	return AirportCongestion{
+		Code:           code,
+		Name:           name,
+		FlightCount:    latest.FlightCount,
+		OnGround:       latest.OnGround,
+		Airborne:       latest.Airborne,
+		Level:          congestionLevel(latest.FlightCount),
+		Trend:          trend,
+		PredictedLevel: congestionLevel(predictedCount),
+		PredictedCount: predictedCount,
+		AvgCount:       math.Round(avg*10) / 10,
+		PeakCount:      peak,
+		History:        historyCopy,
+	}
+}
+
+// Codes returns all airport codes currently tracked.
+func (ct *CongestionTracker) Codes() []string {
+	ct.mu.RLock()
+	defer ct.mu.RUnlock()
+
+	codes := make([]string, 0, len(ct.history))
+	for code, h := range ct.history {
+		if len(h) > 0 {
+			codes = append(codes, code)
+		}
+	}
+	return codes
 }
 
 // DelayPrediction holds prediction results.
@@ -487,7 +673,8 @@ type Engine struct {
 	airlineIdx    *AirlineIndex
 	airportIdx    *AirportFlightIndex
 	history       *DelayHistory
-	
+	congestion    *CongestionTracker
+
 	// Result pools
 	flightPool    sync.Pool
 }
@@ -499,6 +686,7 @@ func New(ont *ontology.Engine) *Engine {
 		airlineIdx: NewAirlineIndex(),
 		airportIdx: NewAirportFlightIndex(),
 		history:    NewDelayHistory(),
+		congestion: NewCongestionTracker(),
 		flightPool: sync.Pool{
 			New: func() interface{} {
 				return make([]FlightInfo, 0, 64)
@@ -1005,6 +1193,57 @@ func (e *Engine) PredictDelay(flightID string) (DelayPrediction, bool) {
 	
 	pred.Elapsed = time.Since(start)
 	return pred, true
+}
+
+// ---------------------------------------------------------------------------
+// Airport Congestion API
+// ---------------------------------------------------------------------------
+
+// RecordCongestion records a congestion snapshot for an airport.
+func (e *Engine) RecordCongestion(code string, total, onGround, airborne int) {
+	e.congestion.RecordCongestion(code, total, onGround, airborne)
+}
+
+// GetAirportCongestion returns congestion data for a single airport.
+func (e *Engine) GetAirportCongestion(code string) AirportCongestion {
+	// Resolve airport name from ontology
+	name := code
+	if node, ok := e.ont.GetNode("apt-" + code); ok {
+		if n, ok := node.GetString("name"); ok {
+			name = n
+		}
+	}
+	return e.congestion.GetCongestion(code, name)
+}
+
+// ListAirportCongestion returns congestion data for all airports with flights.
+func (e *Engine) ListAirportCongestion() []AirportCongestion {
+	codes := e.congestion.Codes()
+	results := make([]AirportCongestion, 0, len(codes))
+
+	for _, code := range codes {
+		c := e.GetAirportCongestion(code)
+		if c.FlightCount > 0 || len(c.History) > 0 {
+			results = append(results, c)
+		}
+	}
+
+	// Sort by flight count descending (most congested first)
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].FlightCount > results[j].FlightCount
+	})
+
+	return results
+}
+
+// GetAirportFlightIDs returns all flight node IDs associated with an airport.
+func (e *Engine) GetAirportFlightIDs(code string) []string {
+	return e.airportIdx.GetAll(code)
+}
+
+// SetAirportCongestion updates the congestion factor in the delay prediction system.
+func (e *Engine) SetAirportCongestion(code string, congestion float64) {
+	e.history.SetAirportCongestion(code, congestion)
 }
 
 // ---------------------------------------------------------------------------

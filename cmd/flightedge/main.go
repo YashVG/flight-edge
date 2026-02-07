@@ -400,6 +400,32 @@ func (a *App) handleFlightBatch(ctx context.Context, flights []models.Flight) er
 	metrics.OntologyNodes.Set(float64(a.ontology.Size()))
 	metrics.OntologyFlights.Set(float64(a.ontology.TypeCount(ontology.TypeFlight)))
 
+	// ── Record congestion for each airport ──────────────────────────
+	for _, apt := range a.airports {
+		ids := a.query.GetAirportFlightIDs(apt.code)
+		total := len(ids)
+		if total == 0 {
+			continue
+		}
+		onGround := 0
+		for _, id := range ids {
+			if node, ok := a.ontology.GetNode(id); ok {
+				if og, ok := node.GetBool("on_ground"); ok && og {
+					onGround++
+				}
+			}
+		}
+		airborne := total - onGround
+		a.query.RecordCongestion(apt.code, total, onGround, airborne)
+
+		// Feed congestion factor (0-1) into delay prediction system
+		congestionFactor := float64(total) / 30.0 // normalize: 30 flights = 1.0
+		if congestionFactor > 1.0 {
+			congestionFactor = 1.0
+		}
+		a.query.SetAirportCongestion(apt.code, congestionFactor)
+	}
+
 	return nil
 }
 
@@ -496,6 +522,8 @@ func (a *App) startHTTPServer() {
 	mux.HandleFunc("/api/v1/airports/", a.handleAirportFlights)
 	mux.HandleFunc("/api/v1/delayed", a.handleDelayedFlights)
 	mux.HandleFunc("/api/v1/predict/", a.handlePredictDelay)
+	mux.HandleFunc("/api/v1/congestion", a.handleCongestion)
+	mux.HandleFunc("/api/v1/congestion/", a.handleCongestionByCode)
 	mux.HandleFunc("/api/v1/stats", a.handleStats)
 
 	// Serve frontend dashboard from web/ directory
@@ -726,6 +754,37 @@ func (a *App) handlePredictDelay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, pred)
+}
+
+func (a *App) handleCongestion(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	metrics.QueryRequests.Inc()
+
+	airports := a.query.ListAirportCongestion()
+	metrics.QueryLatency.Observe(time.Since(start).Seconds())
+
+	respondJSON(w, map[string]interface{}{
+		"airports": airports,
+		"count":    len(airports),
+		"elapsed":  time.Since(start).String(),
+	})
+}
+
+func (a *App) handleCongestionByCode(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	metrics.QueryRequests.Inc()
+
+	code := r.URL.Path[len("/api/v1/congestion/"):]
+	if code == "" {
+		http.Error(w, "airport code required", http.StatusBadRequest)
+		return
+	}
+	code = strings.ToUpper(code)
+
+	congestion := a.query.GetAirportCongestion(code)
+	metrics.QueryLatency.Observe(time.Since(start).Seconds())
+
+	respondJSON(w, congestion)
 }
 
 func (a *App) handleStats(w http.ResponseWriter, r *http.Request) {

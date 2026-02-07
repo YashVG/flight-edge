@@ -95,6 +95,8 @@ DATA_RETENTION_HOURS=6
 | `/api/v1/airports/{code}` | GET | Get flights by airport |
 | `/api/v1/delayed` | GET | Get delayed flights |
 | `/api/v1/predict/{id}` | GET | Predict delay |
+| `/api/v1/congestion` | GET | All airport congestion data |
+| `/api/v1/congestion/{code}` | GET | Airport congestion + prediction |
 | `/api/v1/stats` | GET | System statistics |
 
 ## Testing

@@ -99,6 +99,54 @@
     .stat-value.highlight { color: #00ff88; }
     .stat-value.warning { color: #ffaa00; }
 
+    /* ── Congestion Panel ──────────────────────────────────── */
+    .congestion-list { list-style: none; padding: 0; }
+    .congestion-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      font-size: 13px;
+    }
+    .congestion-item:last-child { border-bottom: none; }
+    .congestion-code {
+      font-weight: 700;
+      width: 40px;
+    }
+    .congestion-count {
+      font-variant-numeric: tabular-nums;
+      margin: 0 8px;
+      color: #ccc;
+    }
+    .congestion-level {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 8px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .congestion-level.low { background: rgba(0,255,136,0.15); color: #00ff88; }
+    .congestion-level.moderate { background: rgba(255,200,0,0.15); color: #ffc800; }
+    .congestion-level.high { background: rgba(255,136,0,0.15); color: #ff8800; }
+    .congestion-level.critical { background: rgba(255,0,60,0.2); color: #ff003c; }
+    .trend-arrow {
+      font-size: 14px;
+      margin-left: 6px;
+      width: 18px;
+      text-align: center;
+    }
+    .trend-arrow.increasing { color: #ff003c; }
+    .trend-arrow.stable { color: #888; }
+    .trend-arrow.decreasing { color: #00ff88; }
+    .congestion-predicted {
+      font-size: 10px;
+      color: #666;
+      margin-top: 2px;
+    }
+
     /* ── Flight Table ───────────────────────────────────────── */
     .table-container {
       height: 280px;
@@ -201,6 +249,13 @@
   <div class="main">
     <div id="map"></div>
     <div class="sidebar">
+      <!-- Congestion -->
+      <div class="stat-group">
+        <h3>Airport Congestion</h3>
+        <ul class="congestion-list" id="congestionList">
+          <div class="stat-row"><span class="stat-label">Waiting for data...</span></div>
+        </ul>
+      </div>
       <!-- Ontology -->
       <div class="stat-group">
         <h3>Ontology</h3>
@@ -303,26 +358,38 @@
     const airportLayer = L.layerGroup().addTo(map);
 
     // ═══════════════════════════════════════════════════════════════
-    // Airport Markers
+    // Airport Markers (colored by congestion level)
     // ═══════════════════════════════════════════════════════════════
-    function createAirportIcon() {
+    const CONGESTION_COLORS = {
+      low:      { border: '#00ff88', bg: 'rgba(0,255,136,0.2)',  label: '#00ff88' },
+      moderate: { border: '#ffc800', bg: 'rgba(255,200,0,0.2)',  label: '#ffc800' },
+      high:     { border: '#ff8800', bg: 'rgba(255,136,0,0.2)',  label: '#ff8800' },
+      critical: { border: '#ff003c', bg: 'rgba(255,0,60,0.25)',  label: '#ff003c' },
+      none:     { border: '#0088ff', bg: 'rgba(0,120,255,0.2)',  label: '#0088ff' },
+    };
+
+    function createAirportIcon(level) {
+      const c = CONGESTION_COLORS[level] || CONGESTION_COLORS.none;
       return L.divIcon({
         className: '',
         html: `<div style="
           width: 24px; height: 24px;
-          background: rgba(0,120,255,0.2);
-          border: 2px solid #0088ff;
+          background: ${c.bg};
+          border: 2px solid ${c.border};
           border-radius: 50%;
           display: flex; align-items: center; justify-content: center;
-          font-size: 10px; color: #0088ff; font-weight: 700;
+          font-size: 10px; color: ${c.border}; font-weight: 700;
+          transition: all 0.3s;
         "></div>`,
         iconSize: [24, 24],
         iconAnchor: [12, 12],
       });
     }
 
+    const airportMarkers = {};
+
     AIRPORTS.forEach(apt => {
-      const marker = L.marker([apt.lat, apt.lon], { icon: createAirportIcon() })
+      const marker = L.marker([apt.lat, apt.lon], { icon: createAirportIcon('none') })
         .bindTooltip(apt.code, {
           permanent: true,
           direction: 'right',
@@ -336,7 +403,58 @@
           <div class="popup-row"><span class="label">Lon</span><span>${apt.lon.toFixed(4)}</span></div>
         `);
       airportLayer.addLayer(marker);
+      airportMarkers[apt.code] = marker;
     });
+
+    // Update airport markers based on congestion data
+    function updateAirportMarkers(congestionList) {
+      // Build lookup by code
+      const congestionMap = {};
+      congestionList.forEach(c => { congestionMap[c.code] = c; });
+
+      AIRPORTS.forEach(apt => {
+        const marker = airportMarkers[apt.code];
+        if (!marker) return;
+
+        const cong = congestionMap[apt.code];
+        const level = cong ? cong.level : 'none';
+
+        // Update icon color
+        marker.setIcon(createAirportIcon(level));
+
+        // Update label class color to match
+        const labelColor = (CONGESTION_COLORS[level] || CONGESTION_COLORS.none).label;
+        const tooltip = marker.getTooltip();
+        if (tooltip) {
+          const el = tooltip.getElement();
+          if (el) {
+            el.style.borderColor = labelColor;
+            el.style.color = labelColor;
+          }
+        }
+
+        // Update popup with congestion info
+        const trendArrow = cong ? (cong.trend === 'increasing' ? '&#9650;' : cong.trend === 'decreasing' ? '&#9660;' : '&#9654;') : '';
+        const trendClass = cong ? cong.trend : '';
+        const congestionHTML = cong ? `
+          <div style="border-top: 1px solid #2a2a4a; margin-top: 8px; padding-top: 8px;">
+            <div class="popup-row"><span class="label">Flights</span><span>${cong.flight_count} (${cong.on_ground} gnd / ${cong.airborne} air)</span></div>
+            <div class="popup-row"><span class="label">Congestion</span><span><span class="congestion-level ${cong.level}">${cong.level}</span></span></div>
+            <div class="popup-row"><span class="label">Trend</span><span class="trend-arrow ${trendClass}">${trendArrow} ${cong.trend}</span></div>
+            <div class="popup-row"><span class="label">Predicted</span><span><span class="congestion-level ${cong.predicted_level}">${cong.predicted_level}</span> (${cong.predicted_count} flights)</span></div>
+            <div class="popup-row"><span class="label">Avg / Peak</span><span>${cong.avg_count} / ${cong.peak_count}</span></div>
+          </div>
+        ` : '';
+
+        marker.setPopupContent(`
+          <div class="popup-title">${apt.code} — ${apt.name}</div>
+          <div class="popup-row"><span class="label">City</span><span>${apt.city}</span></div>
+          <div class="popup-row"><span class="label">Lat</span><span>${apt.lat.toFixed(4)}</span></div>
+          <div class="popup-row"><span class="label">Lon</span><span>${apt.lon.toFixed(4)}</span></div>
+          ${congestionHTML}
+        `);
+      });
+    }
 
     // Add airport label style
     const labelStyle = document.createElement('style');
@@ -390,11 +508,14 @@
     // ═══════════════════════════════════════════════════════════════
     let currentFlights = [];
 
+    let currentCongestion = [];
+
     async function refreshData() {
       try {
-        const [flightsRes, statsRes] = await Promise.all([
+        const [flightsRes, statsRes, congestionRes] = await Promise.all([
           fetch('/api/v1/flights?limit=500'),
           fetch('/api/v1/stats'),
+          fetch('/api/v1/congestion'),
         ]);
 
         if (!flightsRes.ok || !statsRes.ok) throw new Error('API error');
@@ -403,8 +524,16 @@
         const statsData = await statsRes.json();
 
         currentFlights = flightsData.flights || [];
+
+        if (congestionRes.ok) {
+          const congestionData = await congestionRes.json();
+          currentCongestion = congestionData.airports || [];
+        }
+
         updateMap(currentFlights);
+        updateAirportMarkers(currentCongestion);
         updateStats(statsData);
+        updateCongestionPanel(currentCongestion);
         updateTable(currentFlights);
         setStatus(true);
       } catch (err) {
@@ -519,6 +648,39 @@
 
     function setText(id, val) {
       document.getElementById(id).textContent = val;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Update Congestion Panel
+    // ═══════════════════════════════════════════════════════════════
+    function updateCongestionPanel(airports) {
+      const list = document.getElementById('congestionList');
+
+      if (!airports || airports.length === 0) {
+        list.innerHTML = '<div class="stat-row"><span class="stat-label">Waiting for data...</span></div>';
+        return;
+      }
+
+      // Show top airports (sorted by flight count, already sorted by API)
+      const top = airports.slice(0, 10);
+      list.innerHTML = top.map(c => {
+        const trendIcon = c.trend === 'increasing' ? '&#9650;' : c.trend === 'decreasing' ? '&#9660;' : '&#9654;';
+        const predictedHTML = c.trend !== 'stable'
+          ? `<div class="congestion-predicted">${c.predicted_count} in 10m &rarr; <span class="congestion-level ${c.predicted_level}" style="font-size:9px">${c.predicted_level}</span></div>`
+          : '';
+
+        return `
+          <li class="congestion-item" style="flex-wrap: wrap; cursor: pointer;" onclick="panTo(${AIRPORTS.find(a => a.code === c.code)?.lat || 0}, ${AIRPORTS.find(a => a.code === c.code)?.lon || 0})">
+            <div style="display:flex; align-items:center; gap:6px; flex: 1;">
+              <span class="congestion-code" style="color: ${(CONGESTION_COLORS[c.level] || CONGESTION_COLORS.none).label}">${c.code}</span>
+              <span class="congestion-count">${c.flight_count}</span>
+              <span class="congestion-level ${c.level}">${c.level}</span>
+              <span class="trend-arrow ${c.trend}">${trendIcon}</span>
+            </div>
+            ${predictedHTML}
+          </li>
+        `;
+      }).join('');
     }
 
     // ═══════════════════════════════════════════════════════════════
