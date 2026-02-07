@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlightEdge Dashboard</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f0f1a;
+      color: #e0e0e0;
+      overflow-x: hidden;
+    }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    header {
+      background: #1a1a2e;
+      border-bottom: 1px solid #2a2a4a;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 56px;
+    }
+    .logo {
+      font-size: 20px;
+      font-weight: 700;
+      color: #00d4ff;
+      letter-spacing: 1px;
+    }
+    .logo span { color: #e0e0e0; font-weight: 400; }
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 13px;
+      color: #888;
+    }
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #00ff88;
+      display: inline-block;
+      margin-right: 6px;
+      animation: pulse 2s infinite;
+    }
+    .status-dot.error { background: #ff4444; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ── Main Layout ────────────────────────────────────────── */
+    .main {
+      display: flex;
+      height: calc(100vh - 56px - 280px);
+      min-height: 400px;
+    }
+
+    /* ── Map ─────────────────────────────────────────────────── */
+    #map {
+      flex: 1;
+      background: #16213e;
+    }
+    .leaflet-container { background: #16213e; }
+
+    /* Custom dark tiles */
+    .leaflet-tile-pane { filter: brightness(0.7) contrast(1.1) saturate(0.3); }
+
+    /* ── Stats Sidebar ──────────────────────────────────────── */
+    .sidebar {
+      width: 280px;
+      background: #1a1a2e;
+      border-left: 1px solid #2a2a4a;
+      padding: 16px;
+      overflow-y: auto;
+    }
+    .sidebar h3 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #00d4ff;
+      margin-bottom: 12px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    .stat-group { margin-bottom: 20px; }
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 13px;
+    }
+    .stat-label { color: #888; }
+    .stat-value { color: #e0e0e0; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .stat-value.highlight { color: #00ff88; }
+    .stat-value.warning { color: #ffaa00; }
+
+    /* ── Flight Table ───────────────────────────────────────── */
+    .table-container {
+      height: 280px;
+      background: #1a1a2e;
+      border-top: 1px solid #2a2a4a;
+      overflow-y: auto;
+    }
+    .table-header-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 24px;
+      background: #16213e;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    .table-header-bar h3 {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #00d4ff;
+    }
+    .table-header-bar .flight-count {
+      font-size: 12px;
+      color: #888;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    thead th {
+      position: sticky;
+      top: 0;
+      background: #16213e;
+      color: #888;
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 1px;
+      padding: 10px 16px;
+      text-align: left;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    tbody tr {
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    tbody tr:hover { background: #222244; }
+    tbody td {
+      padding: 8px 16px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      white-space: nowrap;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge.airborne { background: rgba(0,255,136,0.15); color: #00ff88; }
+    .badge.ground { background: rgba(255,136,0,0.15); color: #ff8800; }
+
+    /* ── Scrollbar ──────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0f0f1a; }
+    ::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+
+    /* ── Leaflet popup override ─────────────────────────────── */
+    .leaflet-popup-content-wrapper {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border-radius: 8px;
+      border: 1px solid #2a2a4a;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    .leaflet-popup-tip { background: #1a1a2e; }
+    .leaflet-popup-content { font-size: 13px; line-height: 1.6; }
+    .leaflet-popup-content strong { color: #00d4ff; }
+    .popup-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      color: #00d4ff;
+    }
+    .popup-row { display: flex; justify-content: space-between; gap: 16px; }
+    .popup-row .label { color: #888; }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <div class="logo">FLIGHT<span>EDGE</span></div>
+    <div class="status-bar">
+      <span><span class="status-dot" id="statusDot"></span><span id="statusText">Connecting...</span></span>
+      <span id="lastUpdate"></span>
+    </div>
+  </header>
+
+  <!-- Main: Map + Sidebar -->
+  <div class="main">
+    <div id="map"></div>
+    <div class="sidebar">
+      <!-- Ontology -->
+      <div class="stat-group">
+        <h3>Ontology</h3>
+        <div class="stat-row"><span class="stat-label">Flights</span><span class="stat-value highlight" id="statFlights">—</span></div>
+        <div class="stat-row"><span class="stat-label">Airports</span><span class="stat-value" id="statAirports">—</span></div>
+        <div class="stat-row"><span class="stat-label">Edges</span><span class="stat-value" id="statEdges">—</span></div>
+        <div class="stat-row"><span class="stat-label">Total Nodes</span><span class="stat-value" id="statNodes">—</span></div>
+      </div>
+      <!-- Ingestion -->
+      <div class="stat-group">
+        <h3>Ingestion</h3>
+        <div class="stat-row"><span class="stat-label">Total Ingested</span><span class="stat-value" id="statIngested">—</span></div>
+        <div class="stat-row"><span class="stat-label">Filtered</span><span class="stat-value" id="statFiltered">—</span></div>
+        <div class="stat-row"><span class="stat-label">Events/sec</span><span class="stat-value highlight" id="statEps">—</span></div>
+        <div class="stat-row"><span class="stat-label">Avg Latency</span><span class="stat-value" id="statLatency">—</span></div>
+      </div>
+      <!-- Memory -->
+      <div class="stat-group">
+        <h3>Memory</h3>
+        <div class="stat-row"><span class="stat-label">Heap Used</span><span class="stat-value" id="statHeap">—</span></div>
+        <div class="stat-row"><span class="stat-label">System</span><span class="stat-value" id="statSys">—</span></div>
+        <div class="stat-row"><span class="stat-label">GC Runs</span><span class="stat-value" id="statGC">—</span></div>
+      </div>
+      <!-- Runtime -->
+      <div class="stat-group">
+        <h3>Runtime</h3>
+        <div class="stat-row"><span class="stat-label">Uptime</span><span class="stat-value" id="statUptime">—</span></div>
+        <div class="stat-row"><span class="stat-label">Goroutines</span><span class="stat-value" id="statGoroutines">—</span></div>
+        <div class="stat-row"><span class="stat-label">Edge Mode</span><span class="stat-value" id="statEdgeMode">—</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Flight Table -->
+  <div class="table-container">
+    <div class="table-header-bar">
+      <h3>Live Flights</h3>
+      <span class="flight-count" id="flightCount">0 flights</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Callsign</th>
+          <th>Altitude (ft)</th>
+          <th>Speed (kts)</th>
+          <th>Heading</th>
+          <th>Status</th>
+          <th>Airport</th>
+        </tr>
+      </thead>
+      <tbody id="flightTableBody"></tbody>
+    </table>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // ═══════════════════════════════════════════════════════════════
+    // Airport data (from seedAirports in main.go)
+    // ═══════════════════════════════════════════════════════════════
+    const AIRPORTS = [
+      { code: 'YVR', name: 'Vancouver International Airport', city: 'Vancouver', lat: 49.1967, lon: -123.1815 },
+      { code: 'YYZ', name: 'Toronto Pearson International Airport', city: 'Toronto', lat: 43.6777, lon: -79.6248 },
+      { code: 'YUL', name: 'Montréal-Trudeau International Airport', city: 'Montreal', lat: 45.4706, lon: -73.7408 },
+      { code: 'YYC', name: 'Calgary International Airport', city: 'Calgary', lat: 51.1215, lon: -114.0076 },
+      { code: 'JFK', name: 'John F. Kennedy International Airport', city: 'New York', lat: 40.6413, lon: -73.7781 },
+      { code: 'LAX', name: 'Los Angeles International Airport', city: 'Los Angeles', lat: 33.9416, lon: -118.4085 },
+      { code: 'SFO', name: 'San Francisco International Airport', city: 'San Francisco', lat: 37.6213, lon: -122.3790 },
+      { code: 'SEA', name: 'Seattle-Tacoma International Airport', city: 'Seattle', lat: 47.4502, lon: -122.3088 },
+      { code: 'ORD', name: "O'Hare International Airport", city: 'Chicago', lat: 41.9742, lon: -87.9073 },
+      { code: 'DFW', name: 'Dallas/Fort Worth International Airport', city: 'Dallas', lat: 32.8998, lon: -97.0403 },
+      { code: 'LHR', name: 'Heathrow Airport', city: 'London', lat: 51.4700, lon: -0.4543 },
+      { code: 'CDG', name: 'Charles de Gaulle Airport', city: 'Paris', lat: 49.0097, lon: 2.5479 },
+      { code: 'FRA', name: 'Frankfurt Airport', city: 'Frankfurt', lat: 50.0379, lon: 8.5622 },
+      { code: 'NRT', name: 'Narita International Airport', city: 'Tokyo', lat: 35.7720, lon: 140.3929 },
+      { code: 'HND', name: 'Tokyo Haneda Airport', city: 'Tokyo', lat: 35.5494, lon: 139.7798 },
+      { code: 'PEK', name: 'Beijing Capital International Airport', city: 'Beijing', lat: 40.0799, lon: 116.6031 },
+      { code: 'HKG', name: 'Hong Kong International Airport', city: 'Hong Kong', lat: 22.3080, lon: 113.9185 },
+      { code: 'SIN', name: 'Singapore Changi Airport', city: 'Singapore', lat: 1.3644, lon: 103.9915 },
+      { code: 'SYD', name: 'Sydney Kingsford Smith Airport', city: 'Sydney', lat: -33.9399, lon: 151.1753 },
+      { code: 'DXB', name: 'Dubai International Airport', city: 'Dubai', lat: 25.2532, lon: 55.3657 },
+    ];
+
+    // ═══════════════════════════════════════════════════════════════
+    // Map Initialization
+    // ═══════════════════════════════════════════════════════════════
+    const map = L.map('map', {
+      center: [49.2, -123.2],
+      zoom: 7,
+      zoomControl: true,
+      attributionControl: true,
+    });
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 19,
+    }).addTo(map);
+
+    const flightLayer = L.layerGroup().addTo(map);
+    const airportLayer = L.layerGroup().addTo(map);
+
+    // ═══════════════════════════════════════════════════════════════
+    // Airport Markers
+    // ═══════════════════════════════════════════════════════════════
+    function createAirportIcon() {
+      return L.divIcon({
+        className: '',
+        html: `<div style="
+          width: 24px; height: 24px;
+          background: rgba(0,120,255,0.2);
+          border: 2px solid #0088ff;
+          border-radius: 50%;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 10px; color: #0088ff; font-weight: 700;
+        "></div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+      });
+    }
+
+    AIRPORTS.forEach(apt => {
+      const marker = L.marker([apt.lat, apt.lon], { icon: createAirportIcon() })
+        .bindTooltip(apt.code, {
+          permanent: true,
+          direction: 'right',
+          offset: [14, 0],
+          className: 'airport-label',
+        })
+        .bindPopup(`
+          <div class="popup-title">${apt.code} — ${apt.name}</div>
+          <div class="popup-row"><span class="label">City</span><span>${apt.city}</span></div>
+          <div class="popup-row"><span class="label">Lat</span><span>${apt.lat.toFixed(4)}</span></div>
+          <div class="popup-row"><span class="label">Lon</span><span>${apt.lon.toFixed(4)}</span></div>
+        `);
+      airportLayer.addLayer(marker);
+    });
+
+    // Add airport label style
+    const labelStyle = document.createElement('style');
+    labelStyle.textContent = `
+      .airport-label {
+        background: rgba(26,26,46,0.85) !important;
+        border: 1px solid #0088ff !important;
+        color: #0088ff !important;
+        font-size: 11px !important;
+        font-weight: 700 !important;
+        padding: 2px 6px !important;
+        border-radius: 4px !important;
+        box-shadow: none !important;
+      }
+      .airport-label::before { display: none !important; }
+    `;
+    document.head.appendChild(labelStyle);
+
+    // ═══════════════════════════════════════════════════════════════
+    // Flight Markers
+    // ═══════════════════════════════════════════════════════════════
+    function createFlightIcon(heading, onGround) {
+      const color = onGround ? '#ff8800' : '#00ff88';
+      const rotation = heading || 0;
+      return L.divIcon({
+        className: '',
+        html: `<div style="
+          transform: rotate(${rotation}deg);
+          font-size: 20px;
+          filter: drop-shadow(0 0 4px ${color});
+          color: ${color};
+          line-height: 1;
+          width: 24px; height: 24px;
+          display: flex; align-items: center; justify-content: center;
+        ">&#9992;</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+      });
+    }
+
+    function metersToFeet(m) {
+      return Math.round(m * 3.28084);
+    }
+
+    function msToKnots(ms) {
+      return Math.round(ms * 1.94384);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Data Refresh
+    // ═══════════════════════════════════════════════════════════════
+    let currentFlights = [];
+
+    async function refreshData() {
+      try {
+        const [flightsRes, statsRes] = await Promise.all([
+          fetch('/api/v1/flights?limit=500'),
+          fetch('/api/v1/stats'),
+        ]);
+
+        if (!flightsRes.ok || !statsRes.ok) throw new Error('API error');
+
+        const flightsData = await flightsRes.json();
+        const statsData = await statsRes.json();
+
+        currentFlights = flightsData.flights || [];
+        updateMap(currentFlights);
+        updateStats(statsData);
+        updateTable(currentFlights);
+        setStatus(true);
+      } catch (err) {
+        console.error('Refresh failed:', err);
+        setStatus(false);
+      }
+    }
+
+    function setStatus(ok) {
+      const dot = document.getElementById('statusDot');
+      const text = document.getElementById('statusText');
+      const update = document.getElementById('lastUpdate');
+
+      if (ok) {
+        dot.className = 'status-dot';
+        text.textContent = 'Live';
+        update.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      } else {
+        dot.className = 'status-dot error';
+        text.textContent = 'Disconnected';
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Update Map
+    // ═══════════════════════════════════════════════════════════════
+    function updateMap(flights) {
+      flightLayer.clearLayers();
+
+      flights.forEach(f => {
+        if (!f.Latitude && !f.Longitude) return;
+
+        const altFt = metersToFeet(f.Altitude || 0);
+        const spdKts = msToKnots(f.Velocity || 0);
+        const callsign = (f.Callsign || f.ID || 'N/A').trim();
+        const status = f.OnGround ? 'On Ground' : 'Airborne';
+        const heading = f.Heading || 0;
+        const nearestAirport = f.DepartureCode || '—';
+
+        const marker = L.marker([f.Latitude, f.Longitude], {
+          icon: createFlightIcon(heading, f.OnGround),
+        })
+        .bindTooltip(callsign, {
+          direction: 'top',
+          offset: [0, -14],
+          className: 'flight-tooltip',
+        })
+        .bindPopup(`
+          <div class="popup-title">${callsign}</div>
+          <div class="popup-row"><span class="label">Status</span><span>${status}</span></div>
+          <div class="popup-row"><span class="label">Altitude</span><span>${altFt.toLocaleString()} ft</span></div>
+          <div class="popup-row"><span class="label">Speed</span><span>${spdKts} kts</span></div>
+          <div class="popup-row"><span class="label">Heading</span><span>${Math.round(heading)}°</span></div>
+          <div class="popup-row"><span class="label">Airport</span><span>${nearestAirport}</span></div>
+          <div class="popup-row"><span class="label">ICAO24</span><span style="font-family:monospace">${f.ID || f.FlightID}</span></div>
+        `);
+        flightLayer.addLayer(marker);
+      });
+    }
+
+    // Flight tooltip style
+    const ftStyle = document.createElement('style');
+    ftStyle.textContent = `
+      .flight-tooltip {
+        background: rgba(26,26,46,0.9) !important;
+        border: 1px solid #00ff88 !important;
+        color: #00ff88 !important;
+        font-size: 12px !important;
+        font-weight: 600 !important;
+        padding: 2px 8px !important;
+        border-radius: 4px !important;
+        box-shadow: none !important;
+      }
+      .flight-tooltip::before { display: none !important; }
+    `;
+    document.head.appendChild(ftStyle);
+
+    // ═══════════════════════════════════════════════════════════════
+    // Update Stats
+    // ═══════════════════════════════════════════════════════════════
+    function updateStats(s) {
+      const ont = s.ontology || {};
+      const ing = s.ingestion || {};
+      const mem = s.memory || {};
+      const rt = s.runtime || {};
+      const eg = s.edge || {};
+
+      setText('statFlights', ont.flights ?? '—');
+      setText('statAirports', ont.airports ?? '—');
+      setText('statEdges', (ont.total_edges ?? 0).toLocaleString());
+      setText('statNodes', (ont.total_nodes ?? 0).toLocaleString());
+
+      setText('statIngested', (ing.total_flights ?? 0).toLocaleString());
+      setText('statFiltered', (ing.filtered_flights ?? 0).toLocaleString());
+      setText('statEps', (ing.events_per_sec ?? 0).toFixed(1));
+      setText('statLatency', (ing.avg_latency_ms ?? 0).toFixed(0) + ' ms');
+
+      setText('statHeap', (mem.heap_alloc_mb ?? 0).toFixed(1) + ' MB');
+      setText('statSys', (mem.sys_mb ?? 0).toFixed(0) + ' MB');
+      setText('statGC', mem.gc_runs ?? '—');
+
+      setText('statUptime', rt.uptime ?? '—');
+      setText('statGoroutines', rt.goroutines ?? '—');
+      setText('statEdgeMode', eg.memory_mode ?? '—');
+
+      // Color heap based on usage
+      const heapEl = document.getElementById('statHeap');
+      const ratio = eg.usage_ratio || 0;
+      if (ratio > 0.8) heapEl.className = 'stat-value warning';
+      else heapEl.className = 'stat-value';
+    }
+
+    function setText(id, val) {
+      document.getElementById(id).textContent = val;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Update Table
+    // ═══════════════════════════════════════════════════════════════
+    function updateTable(flights) {
+      const tbody = document.getElementById('flightTableBody');
+      const countEl = document.getElementById('flightCount');
+      countEl.textContent = `${flights.length} flight${flights.length !== 1 ? 's' : ''}`;
+
+      // Sort: airborne first, then by altitude descending
+      const sorted = [...flights].sort((a, b) => {
+        if (a.OnGround !== b.OnGround) return a.OnGround ? 1 : -1;
+        return (b.Altitude || 0) - (a.Altitude || 0);
+      });
+
+      tbody.innerHTML = sorted.map(f => {
+        const callsign = (f.Callsign || f.ID || '—').trim();
+        const altFt = metersToFeet(f.Altitude || 0);
+        const spdKts = msToKnots(f.Velocity || 0);
+        const heading = Math.round(f.Heading || 0);
+        const onGround = f.OnGround;
+        const statusBadge = onGround
+          ? '<span class="badge ground">GND</span>'
+          : '<span class="badge airborne">AIR</span>';
+        const airport = f.DepartureCode || '—';
+
+        return `<tr data-lat="${f.Latitude}" data-lon="${f.Longitude}" onclick="panTo(${f.Latitude}, ${f.Longitude})">
+          <td><strong>${callsign}</strong></td>
+          <td>${onGround ? '—' : altFt.toLocaleString()}</td>
+          <td>${spdKts}</td>
+          <td>${heading}°</td>
+          <td>${statusBadge}</td>
+          <td>${airport}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function panTo(lat, lon) {
+      if (lat && lon) {
+        map.setView([lat, lon], 10, { animate: true });
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Bootstrap
+    // ═══════════════════════════════════════════════════════════════
+    refreshData();
+    setInterval(refreshData, 5000);
+  </script>
+</body>
+</html>

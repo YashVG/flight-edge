@@ -118,6 +118,7 @@ type FlightInfo struct {
 	DelayMinutes    int
 	Altitude        float64
 	Velocity        float64
+	Heading         float64
 	Latitude        float64
 	Longitude       float64
 	OnGround        bool
@@ -571,6 +572,33 @@ func (e *Engine) Execute(req Request) Result {
 	return Result{
 		Nodes:   matched,
 		Elapsed: time.Since(start),
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListFlights - Returns all flights as FlightInfo structs
+// ---------------------------------------------------------------------------
+
+// ListFlights returns all flights as structured FlightInfo objects.
+func (e *Engine) ListFlights(maxResults int) FlightResult {
+	start := time.Now()
+
+	results := make([]FlightInfo, 0, 128)
+	total := 0
+
+	e.ont.ForEachNodeOfType(ontology.TypeFlight, func(n *ontology.Node) bool {
+		total++
+		if maxResults > 0 && len(results) >= maxResults {
+			return true // keep counting total
+		}
+		results = append(results, e.nodeToFlightInfo(n))
+		return true
+	})
+
+	return FlightResult{
+		Flights: results,
+		Elapsed: time.Since(start),
+		Total:   total,
 	}
 }
 
@@ -1044,6 +1072,9 @@ func (e *Engine) nodeToFlightInfo(n *ontology.Node) FlightInfo {
 	}
 	if v, ok := n.GetFloat("velocity"); ok {
 		info.Velocity = v
+	}
+	if v, ok := n.GetFloat("heading"); ok {
+		info.Heading = v
 	}
 	if lat, lon, ok := n.GetLocation("position"); ok {
 		info.Latitude = lat

@@ -498,6 +498,9 @@ func (a *App) startHTTPServer() {
 	mux.HandleFunc("/api/v1/predict/", a.handlePredictDelay)
 	mux.HandleFunc("/api/v1/stats", a.handleStats)
 
+	// Serve frontend dashboard from web/ directory
+	mux.Handle("/", http.FileServer(http.Dir("web")))
+
 	addr := fmt.Sprintf("%s:%d", a.config.HTTPAddr, a.config.HTTPPort)
 	a.server = &http.Server{
 		Addr:         addr,
@@ -595,16 +598,13 @@ func (a *App) handleFlights(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result := a.query.Execute(query.Request{
-		NodeType:   ontology.TypeFlight,
-		MaxResults: maxResults,
-	})
-
+	result := a.query.ListFlights(maxResults)
 	metrics.QueryLatency.Observe(time.Since(start).Seconds())
 
 	respondJSON(w, map[string]interface{}{
-		"flights": result.Nodes,
-		"count":   len(result.Nodes),
+		"flights": result.Flights,
+		"count":   len(result.Flights),
+		"total":   result.Total,
 		"elapsed": result.Elapsed.String(),
 	})
 }
