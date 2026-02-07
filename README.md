@@ -38,9 +38,15 @@ Set environment variables:
 HTTP_ADDR=0.0.0.0
 HTTP_PORT=8080
 
-# OpenSky API (optional, for authenticated access)
-OPENSKY_USERNAME=your_username
-OPENSKY_PASSWORD=your_password
+# OpenSky API - OAuth2 (recommended)
+# Option 1: Place credentials.json in project root (auto-detected)
+# Option 2: Set env vars:
+OPENSKY_CLIENT_ID=your_client_id
+OPENSKY_CLIENT_SECRET=your_client_secret
+
+# OpenSky API - Basic Auth (legacy, deprecated since March 2025)
+# OPENSKY_USERNAME=your_username
+# OPENSKY_PASSWORD=your_password
 
 # Ingestion
 POLL_INTERVAL=10s

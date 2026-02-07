@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,10 +19,16 @@ import (
 const (
 	defaultBaseURL = "https://opensky-network.org/api"
 
+	// OpenSky OAuth2 token endpoint
+	defaultTokenURL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
+
 	// OpenSky rate limits:
 	// - Anonymous: 10 seconds between /states/all calls
 	// - Authenticated: 5 seconds between /states/all calls
 	defaultPollInterval = 10 * time.Second
+
+	// Token refresh buffer - refresh before actual expiry
+	tokenRefreshBuffer = 2 * time.Minute
 
 	// Connection pool settings
 	maxIdleConns        = 10
@@ -223,6 +231,123 @@ func (f *Filter) Matches(flight *models.Flight) bool {
 }
 
 // ---------------------------------------------------------------------------
+// OAuth2 Token Management
+// ---------------------------------------------------------------------------
+
+// tokenResponse mirrors the JSON from the OpenSky token endpoint.
+type tokenResponse struct {
+	AccessToken string `json:"access_token"`
+	ExpiresIn   int    `json:"expires_in"` // seconds
+	TokenType   string `json:"token_type"`
+}
+
+// TokenManager handles OAuth2 client-credentials token lifecycle.
+type TokenManager struct {
+	clientID     string
+	clientSecret string
+	tokenURL     string
+	httpClient   *http.Client
+
+	mu        sync.RWMutex
+	token     string
+	expiresAt time.Time
+}
+
+// NewTokenManager creates a token manager for OAuth2 client credentials flow.
+func NewTokenManager(clientID, clientSecret string) *TokenManager {
+	return &TokenManager{
+		clientID:     clientID,
+		clientSecret: clientSecret,
+		tokenURL:     defaultTokenURL,
+		httpClient:   &http.Client{Timeout: 15 * time.Second},
+	}
+}
+
+// Token returns a valid access token, refreshing if needed.
+func (tm *TokenManager) Token(ctx context.Context) (string, error) {
+	tm.mu.RLock()
+	if tm.token != "" && time.Now().Before(tm.expiresAt) {
+		tok := tm.token
+		tm.mu.RUnlock()
+		return tok, nil
+	}
+	tm.mu.RUnlock()
+
+	return tm.refresh(ctx)
+}
+
+// refresh fetches a new token from the OAuth2 endpoint.
+func (tm *TokenManager) refresh(ctx context.Context) (string, error) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if tm.token != "" && time.Now().Before(tm.expiresAt) {
+		return tm.token, nil
+	}
+
+	data := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {tm.clientID},
+		"client_secret": {tm.clientSecret},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tm.tokenURL,
+		strings.NewReader(data.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("creating token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := tm.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("requesting token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("token request failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var tokResp tokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tokResp); err != nil {
+		return "", fmt.Errorf("decoding token response: %w", err)
+	}
+
+	tm.token = tokResp.AccessToken
+	// Refresh before actual expiry to avoid edge-case failures
+	tm.expiresAt = time.Now().Add(time.Duration(tokResp.ExpiresIn)*time.Second - tokenRefreshBuffer)
+
+	return tm.token, nil
+}
+
+// Credentials holds OAuth2 client credentials loaded from credentials.json.
+type Credentials struct {
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+}
+
+// LoadCredentials reads OAuth2 credentials from a JSON file.
+func LoadCredentials(path string) (*Credentials, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading credentials file: %w", err)
+	}
+
+	var creds Credentials
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return nil, fmt.Errorf("parsing credentials file: %w", err)
+	}
+
+	if creds.ClientID == "" || creds.ClientSecret == "" {
+		return nil, fmt.Errorf("credentials file missing clientId or clientSecret")
+	}
+
+	return &creds, nil
+}
+
+// ---------------------------------------------------------------------------
 // Client with Connection Pooling
 // ---------------------------------------------------------------------------
 
@@ -239,7 +364,7 @@ func WithBaseURLOption(url string) ClientOption {
 	return func(c *Client) { c.baseURL = url }
 }
 
-// WithCredentials sets authentication credentials (increases rate limits).
+// WithCredentials sets Basic Auth credentials (legacy, deprecated by OpenSky).
 func WithCredentials(username, password string) ClientOption {
 	return func(c *Client) {
 		c.username = username
@@ -247,12 +372,27 @@ func WithCredentials(username, password string) ClientOption {
 	}
 }
 
+// WithClientCredentials sets OAuth2 client credentials for token-based auth.
+func WithClientCredentials(clientID, clientSecret string) ClientOption {
+	return func(c *Client) {
+		c.tokenManager = NewTokenManager(clientID, clientSecret)
+	}
+}
+
+// WithTokenManager sets a custom token manager (useful for testing).
+func WithTokenManager(tm *TokenManager) ClientOption {
+	return func(c *Client) {
+		c.tokenManager = tm
+	}
+}
+
 // Client fetches live flight data from the OpenSky Network API.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
-	username   string
-	password   string
+	baseURL      string
+	httpClient   *http.Client
+	username     string
+	password     string
+	tokenManager *TokenManager
 }
 
 // NewClient creates an OpenSky API client with connection pooling.
@@ -301,8 +441,14 @@ func (c *Client) FetchAllStates(ctx context.Context) ([]models.Flight, error) {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	// Add auth if credentials provided
-	if c.username != "" && c.password != "" {
+	// Add auth: prefer OAuth2 Bearer token, fall back to Basic Auth (legacy)
+	if c.tokenManager != nil {
+		token, err := c.tokenManager.Token(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("obtaining access token: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if c.username != "" && c.password != "" {
 		req.SetBasicAuth(c.username, c.password)
 	}
 

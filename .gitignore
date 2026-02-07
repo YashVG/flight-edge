@@ -4,3 +4,4 @@ bin/
 *.out
 .env
 PROJECT_REVIEW.md
+credentials.json

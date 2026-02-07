@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,6 +132,198 @@ func TestClientWithCredentials(t *testing.T) {
 	_, err := client.FetchAllStates(context.Background())
 	require.NoError(t, err)
 	assert.Contains(t, gotAuth, "Basic")
+}
+
+func TestClientWithOAuth2(t *testing.T) {
+	// Mock token server
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
+
+		err := r.ParseForm()
+		require.NoError(t, err)
+		assert.Equal(t, "client_credentials", r.FormValue("grant_type"))
+		assert.Equal(t, "my-client-id", r.FormValue("client_id"))
+		assert.Equal(t, "my-client-secret", r.FormValue("client_secret"))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "test-token-123",
+			"expires_in":   1800,
+			"token_type":   "Bearer",
+		})
+	}))
+	defer tokenSrv.Close()
+
+	// Mock API server
+	var gotAuth string
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		json.NewEncoder(w).Encode(map[string]interface{}{"time": 0, "states": [][]interface{}{}})
+	}))
+	defer apiSrv.Close()
+
+	// Create token manager pointing to mock token server
+	tm := NewTokenManager("my-client-id", "my-client-secret")
+	tm.tokenURL = tokenSrv.URL
+
+	client := NewClient(
+		WithBaseURLOption(apiSrv.URL),
+		WithTokenManager(tm),
+	)
+
+	_, err := client.FetchAllStates(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer test-token-123", gotAuth)
+}
+
+func TestTokenManagerCachesToken(t *testing.T) {
+	callCount := 0
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "cached-token",
+			"expires_in":   1800,
+			"token_type":   "Bearer",
+		})
+	}))
+	defer tokenSrv.Close()
+
+	tm := NewTokenManager("id", "secret")
+	tm.tokenURL = tokenSrv.URL
+
+	// First call fetches
+	tok1, err := tm.Token(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "cached-token", tok1)
+	assert.Equal(t, 1, callCount)
+
+	// Second call uses cache
+	tok2, err := tm.Token(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "cached-token", tok2)
+	assert.Equal(t, 1, callCount) // No additional request
+}
+
+func TestTokenManagerRefreshesExpiredToken(t *testing.T) {
+	callCount := 0
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "fresh-token",
+			"expires_in":   1, // Expires in 1 second
+			"token_type":   "Bearer",
+		})
+	}))
+	defer tokenSrv.Close()
+
+	tm := NewTokenManager("id", "secret")
+	tm.tokenURL = tokenSrv.URL
+
+	// First call
+	_, err := tm.Token(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, callCount)
+
+	// Force expiration by setting expiresAt to past
+	tm.mu.Lock()
+	tm.expiresAt = time.Now().Add(-1 * time.Second)
+	tm.mu.Unlock()
+
+	// Should trigger refresh
+	_, err = tm.Token(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, callCount)
+}
+
+func TestTokenManagerHandlesError(t *testing.T) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"invalid_client"}`))
+	}))
+	defer tokenSrv.Close()
+
+	tm := NewTokenManager("bad-id", "bad-secret")
+	tm.tokenURL = tokenSrv.URL
+
+	_, err := tm.Token(context.Background())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "token request failed (status 401)")
+}
+
+func TestOAuth2PreferredOverBasicAuth(t *testing.T) {
+	// When both OAuth2 and Basic Auth are configured, OAuth2 should be used
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "oauth-token",
+			"expires_in":   1800,
+			"token_type":   "Bearer",
+		})
+	}))
+	defer tokenSrv.Close()
+
+	var gotAuth string
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		json.NewEncoder(w).Encode(map[string]interface{}{"time": 0, "states": [][]interface{}{}})
+	}))
+	defer apiSrv.Close()
+
+	tm := NewTokenManager("id", "secret")
+	tm.tokenURL = tokenSrv.URL
+
+	client := NewClient(
+		WithBaseURLOption(apiSrv.URL),
+		WithCredentials("user", "pass"),
+		WithTokenManager(tm),
+	)
+
+	_, err := client.FetchAllStates(context.Background())
+	require.NoError(t, err)
+	// OAuth2 Bearer should be used, not Basic
+	assert.Contains(t, gotAuth, "Bearer")
+	assert.NotContains(t, gotAuth, "Basic")
+}
+
+func TestLoadCredentials(t *testing.T) {
+	// Create a temp credentials file
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	err := os.WriteFile(path, []byte(`{"clientId":"test-id","clientSecret":"test-secret"}`), 0644)
+	require.NoError(t, err)
+
+	creds, err := LoadCredentials(path)
+	require.NoError(t, err)
+	assert.Equal(t, "test-id", creds.ClientID)
+	assert.Equal(t, "test-secret", creds.ClientSecret)
+}
+
+func TestLoadCredentialsMissingFile(t *testing.T) {
+	_, err := LoadCredentials("/nonexistent/path/credentials.json")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "reading credentials file")
+}
+
+func TestLoadCredentialsInvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.json")
+	err := os.WriteFile(path, []byte(`not json`), 0644)
+	require.NoError(t, err)
+
+	_, err = LoadCredentials(path)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing credentials file")
+}
+
+func TestLoadCredentialsMissingFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.json")
+	err := os.WriteFile(path, []byte(`{"clientId":"","clientSecret":""}`), 0644)
+	require.NoError(t, err)
+
+	_, err = LoadCredentials(path)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "missing clientId or clientSecret")
 }
 
 // ---------------------------------------------------------------------------

@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,9 +33,16 @@ type Config struct {
 	HTTPAddr string
 	HTTPPort int
 
-	// OpenSky API
+	// OpenSky API - OAuth2 (preferred)
+	OpenSkyClientID     string
+	OpenSkyClientSecret string
+
+	// OpenSky API - Basic Auth (legacy, deprecated)
 	OpenSkyUsername string
 	OpenSkyPassword string
+
+	// Path to credentials.json (optional, overrides env vars)
+	CredentialsFile string
 
 	// Ingestion
 	PollInterval    time.Duration
@@ -48,17 +57,39 @@ func loadConfig() Config {
 	edgeCfg := edge.LoadFromEnv()
 
 	cfg := Config{
-		HTTPAddr:        getEnv("HTTP_ADDR", "0.0.0.0"),
-		HTTPPort:        getEnvInt("HTTP_PORT", 8080),
-		OpenSkyUsername: getEnv("OPENSKY_USERNAME", ""),
-		OpenSkyPassword: getEnv("OPENSKY_PASSWORD", ""),
-		PollInterval:    getEnvDuration("POLL_INTERVAL", 10*time.Second),
-		EnableIngestion: getEnvBool("ENABLE_INGESTION", true),
-		Edge:            edgeCfg,
+		HTTPAddr:            getEnv("HTTP_ADDR", "0.0.0.0"),
+		HTTPPort:            getEnvInt("HTTP_PORT", 8080),
+		OpenSkyClientID:     getEnv("OPENSKY_CLIENT_ID", ""),
+		OpenSkyClientSecret: getEnv("OPENSKY_CLIENT_SECRET", ""),
+		OpenSkyUsername:      getEnv("OPENSKY_USERNAME", ""),
+		OpenSkyPassword:     getEnv("OPENSKY_PASSWORD", ""),
+		CredentialsFile:     getEnv("CREDENTIALS_FILE", "credentials.json"),
+		PollInterval:        getEnvDuration("POLL_INTERVAL", 10*time.Second),
+		EnableIngestion:     getEnvBool("ENABLE_INGESTION", true),
+		Edge:                edgeCfg,
+	}
+
+	// Try loading credentials.json if OAuth2 env vars are not set
+	if cfg.OpenSkyClientID == "" || cfg.OpenSkyClientSecret == "" {
+		if creds, err := ingestion.LoadCredentials(cfg.CredentialsFile); err == nil {
+			cfg.OpenSkyClientID = creds.ClientID
+			cfg.OpenSkyClientSecret = creds.ClientSecret
+			log.Printf("Loaded OAuth2 credentials from %s (client_id=%s)", cfg.CredentialsFile, creds.ClientID)
+		}
 	}
 
 	// Apply edge runtime settings (GOMAXPROCS, GC, memory limit)
 	cfg.Edge.Apply()
+
+	// Log auth method
+	switch {
+	case cfg.OpenSkyClientID != "":
+		log.Printf("OpenSky auth: OAuth2 client credentials (client_id=%s)", cfg.OpenSkyClientID)
+	case cfg.OpenSkyUsername != "":
+		log.Printf("OpenSky auth: Basic Auth (legacy, username=%s)", cfg.OpenSkyUsername)
+	default:
+		log.Println("OpenSky auth: anonymous (rate limited to 400 credits/day)")
+	}
 
 	log.Printf("Edge configuration: mode=%s memory_limit=%dMB gc=%d%% retention=%dh compression=%v",
 		cfg.Edge.MemoryMode, cfg.Edge.MemoryLimitMB, cfg.Edge.GCPercent,
@@ -105,6 +136,31 @@ func getEnvDuration(key string, defaultVal time.Duration) time.Duration {
 // Application
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Airport Position Cache & Geo Helpers
+// ---------------------------------------------------------------------------
+
+// airportPosition caches airport locations for fast proximity lookups.
+type airportPosition struct {
+	code string
+	lat  float64
+	lon  float64
+}
+
+// haversineKm returns the distance in kilometers between two lat/lon points.
+func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
+	const earthRadiusKm = 6371.0
+	dLat := (lat2 - lat1) * math.Pi / 180.0
+	dLon := (lon2 - lon1) * math.Pi / 180.0
+	lat1r := lat1 * math.Pi / 180.0
+	lat2r := lat2 * math.Pi / 180.0
+
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1r)*math.Cos(lat2r)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	return earthRadiusKm * c
+}
+
 // App holds all application components.
 type App struct {
 	config    Config
@@ -113,6 +169,9 @@ type App struct {
 	ingestion *ingestion.Processor
 	client    *ingestion.Client
 	server    *http.Server
+
+	// Cached airport positions for proximity matching
+	airports []airportPosition
 
 	// Edge components
 	memoryMonitor     *edge.MemoryMonitor
@@ -139,9 +198,11 @@ func NewApp(cfg Config) *App {
 	// Create query engine
 	qe := query.New(ont)
 
-	// Create ingestion client
+	// Create ingestion client - prefer OAuth2, fall back to Basic Auth
 	clientOpts := []ingestion.ClientOption{}
-	if cfg.OpenSkyUsername != "" && cfg.OpenSkyPassword != "" {
+	if cfg.OpenSkyClientID != "" && cfg.OpenSkyClientSecret != "" {
+		clientOpts = append(clientOpts, ingestion.WithClientCredentials(cfg.OpenSkyClientID, cfg.OpenSkyClientSecret))
+	} else if cfg.OpenSkyUsername != "" && cfg.OpenSkyPassword != "" {
 		clientOpts = append(clientOpts, ingestion.WithCredentials(cfg.OpenSkyUsername, cfg.OpenSkyPassword))
 	}
 	client := ingestion.NewClient(clientOpts...)
@@ -153,6 +214,17 @@ func NewApp(cfg Config) *App {
 		client:    client,
 		startTime: time.Now(),
 	}
+
+	// Cache airport positions for proximity matching during ingestion
+	ont.ForEachNodeOfType(ontology.TypeAirport, func(n *ontology.Node) bool {
+		if code, ok := n.GetString("code"); ok {
+			if lat, lon, ok := n.GetLocation("position"); ok {
+				app.airports = append(app.airports, airportPosition{code: code, lat: lat, lon: lon})
+			}
+		}
+		return true
+	})
+	log.Printf("Cached %d airport positions for proximity matching", len(app.airports))
 
 	// Set up edge components
 	app.setupEdgeComponents()
@@ -233,6 +305,21 @@ func (a *App) evictOldestNodes(count int) {
 	}
 }
 
+// findNearestAirport returns the nearest cached airport and its distance in km.
+func (a *App) findNearestAirport(lat, lon float64) (string, float64) {
+	var bestCode string
+	bestDist := math.MaxFloat64
+
+	for _, apt := range a.airports {
+		d := haversineKm(lat, lon, apt.lat, apt.lon)
+		if d < bestDist {
+			bestDist = d
+			bestCode = apt.code
+		}
+	}
+	return bestCode, bestDist
+}
+
 // handleFlightBatch processes a batch of flights from ingestion.
 func (a *App) handleFlightBatch(ctx context.Context, flights []models.Flight) error {
 	// Check if we're under memory pressure - reject if degradation says so
@@ -255,7 +342,44 @@ func (a *App) handleFlightBatch(ctx context.Context, flights []models.Flight) er
 		n.SetFloat("heading", f.Heading)
 		n.SetBool("on_ground", f.OnGround)
 		n.SetTimestamp("last_contact", f.LastContact)
+
+		// Match flight to nearest airport by proximity
+		var nearestCode string
+		if f.Latitude != 0 || f.Longitude != 0 {
+			code, dist := a.findNearestAirport(f.Latitude, f.Longitude)
+			// On-ground flights within 50km are likely at the airport
+			// Airborne flights within 100km are associated with the airport
+			threshold := 100.0
+			if f.OnGround {
+				threshold = 50.0
+			}
+			if dist <= threshold {
+				nearestCode = code
+				n.SetString("nearest_airport", code)
+				n.SetString("departure_code", code)
+
+				// Resolve airport name from callsign direction hint
+				for _, apt := range a.airports {
+					if apt.code == code {
+						n.SetString("departure_name", apt.code+" Airport")
+						break
+					}
+				}
+			}
+		}
+
+		// Extract airline code from callsign (first 3 chars are ICAO airline code)
+		callsign := strings.TrimSpace(f.Callsign)
+		if len(callsign) >= 3 {
+			n.SetString("airline", callsign[:3])
+		}
+
 		a.ontology.AddNode(n)
+
+		// Create edge from flight to nearest airport
+		if nearestCode != "" {
+			a.ontology.AddEdge(f.ICAO24, "apt-"+nearestCode, ontology.RelDepartsFrom)
+		}
 
 		// Track node for expiration
 		if a.expirationManager != nil {
@@ -266,9 +390,8 @@ func (a *App) handleFlightBatch(ctx context.Context, flights []models.Flight) er
 		}
 
 		// Index for queries
-		callsign := f.Callsign
 		if len(callsign) >= 3 {
-			a.query.IndexFlight(f.ICAO24, callsign, "", "")
+			a.query.IndexFlight(f.ICAO24, callsign, nearestCode, "")
 		}
 	}
 
