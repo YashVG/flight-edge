@@ -1,0 +1,33 @@
+# ==============================================================================
+# Prometheus Configuration for FlightEdge
+# ==============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  
+  # Attach labels to any time series or alerts
+  external_labels:
+    monitor: 'flightedge-monitor'
+
+# Alerting configuration (optional)
+alerting:
+  alertmanagers: []
+
+# Rule files
+rule_files: []
+
+# Scrape configurations
+scrape_configs:
+  # FlightEdge application metrics
+  - job_name: 'flightedge'
+    static_configs:
+      - targets: ['flightedge:8080']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

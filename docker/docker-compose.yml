@@ -1,0 +1,154 @@
+# ==============================================================================
+# FlightEdge - Docker Compose Configuration
+# Simulates edge computing constraints: 512MB memory, 0.5 CPU
+# ==============================================================================
+
+version: "3.8"
+
+services:
+  # ----------------------------------------------------------------------------
+  # FlightEdge Application
+  # ----------------------------------------------------------------------------
+  flightedge:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    image: flightedge:latest
+    container_name: flightedge
+    restart: unless-stopped
+    
+    # Resource limits (edge computing simulation)
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    
+    # For non-swarm mode, use these instead
+    mem_limit: 512m
+    mem_reservation: 256m
+    cpus: 0.5
+    
+    ports:
+      - "8080:8080"
+    
+    environment:
+      # Server configuration
+      - HTTP_ADDR=0.0.0.0
+      - HTTP_PORT=8080
+      
+      # OpenSky API credentials (optional, increases rate limits)
+      - OPENSKY_USERNAME=${OPENSKY_USERNAME:-}
+      - OPENSKY_PASSWORD=${OPENSKY_PASSWORD:-}
+      
+      # Ingestion settings
+      - ENABLE_INGESTION=${ENABLE_INGESTION:-true}
+      - POLL_INTERVAL=${POLL_INTERVAL:-10s}
+      
+      # Performance tuning for edge constraints
+      - GOMAXPROCS=1
+      - GOGC=50
+      - GOMEMLIMIT=450MiB
+    
+    volumes:
+      - ./config:/app/config:ro
+      - flightedge-data:/app/data
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    
+    networks:
+      - flightedge-net
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ----------------------------------------------------------------------------
+  # Prometheus (Metrics Collection)
+  # ----------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: flightedge-prometheus
+    restart: unless-stopped
+    
+    # Resource limits
+    mem_limit: 256m
+    cpus: 0.25
+    
+    ports:
+      - "9090:9090"
+    
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    
+    networks:
+      - flightedge-net
+    
+    depends_on:
+      flightedge:
+        condition: service_healthy
+
+  # ----------------------------------------------------------------------------
+  # Grafana (Metrics Visualization) - Optional
+  # ----------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: flightedge-grafana
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    
+    # Resource limits
+    mem_limit: 256m
+    cpus: 0.25
+    
+    ports:
+      - "3000:3000"
+    
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    
+    networks:
+      - flightedge-net
+    
+    depends_on:
+      - prometheus
+
+# ------------------------------------------------------------------------------
+# Networks
+# ------------------------------------------------------------------------------
+networks:
+  flightedge-net:
+    driver: bridge
+
+# ------------------------------------------------------------------------------
+# Volumes
+# ------------------------------------------------------------------------------
+volumes:
+  flightedge-data:
+  prometheus-data:
+  grafana-data:
