@@ -2,6 +2,8 @@
 
 Real-time flight ontology engine optimized for edge computing constraints.
 
+![Demo](demo.gif)
+
 ## Features
 
 - **Flight Tracking**: Real-time ingestion from OpenSky Network API
