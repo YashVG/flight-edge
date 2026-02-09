@@ -238,7 +238,13 @@
 <body>
   <!-- Header -->
   <header>
-    <div class="logo">FLIGHT<span>EDGE</span></div>
+    <div style="display:flex;align-items:center;gap:20px;">
+      <div class="logo">FLIGHT<span>EDGE</span></div>
+      <nav style="display:flex;gap:4px;">
+        <a href="/" style="color:#00d4ff;background:rgba(0,212,255,0.1);text-decoration:none;font-size:13px;padding:6px 12px;border-radius:6px;">Map</a>
+        <a href="/metrics.html" style="color:#888;text-decoration:none;font-size:13px;padding:6px 12px;border-radius:6px;transition:all 0.2s;" onmouseover="this.style.color='#e0e0e0';this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.color='#888';this.style.background='transparent'">Metrics</a>
+      </nav>
+    </div>
     <div class="status-bar">
       <span><span class="status-dot" id="statusDot"></span><span id="statusText">Connecting...</span></span>
       <span id="lastUpdate"></span>

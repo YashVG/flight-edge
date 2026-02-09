@@ -1,0 +1,912 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlightEdge — Metrics Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f0f1a;
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+
+    /* ── Header ───────────────────────────────────────────── */
+    header {
+      background: #1a1a2e;
+      border-bottom: 1px solid #2a2a4a;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 56px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-left { display: flex; align-items: center; gap: 20px; }
+    .logo {
+      font-size: 20px;
+      font-weight: 700;
+      color: #00d4ff;
+      letter-spacing: 1px;
+      text-decoration: none;
+    }
+    .logo span { color: #e0e0e0; font-weight: 400; }
+    .nav-links { display: flex; gap: 4px; }
+    .nav-links a {
+      color: #888;
+      text-decoration: none;
+      font-size: 13px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+    .nav-links a:hover { color: #e0e0e0; background: rgba(255,255,255,0.05); }
+    .nav-links a.active { color: #00d4ff; background: rgba(0,212,255,0.1); }
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 13px;
+      color: #888;
+    }
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #00ff88;
+      display: inline-block;
+      margin-right: 6px;
+      animation: pulse 2s infinite;
+    }
+    .status-dot.error { background: #ff4444; animation: none; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ── Page Content ─────────────────────────────────────── */
+    .page { padding: 20px 24px; max-width: 1600px; margin: 0 auto; }
+    .page-title {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .page-subtitle {
+      font-size: 13px;
+      color: #666;
+      margin-bottom: 24px;
+    }
+
+    /* ── Metric Cards Row ─────────────────────────────────── */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: #1a1a2e;
+      border: 1px solid #2a2a4a;
+      border-radius: 10px;
+      padding: 16px;
+      transition: border-color 0.2s;
+    }
+    .card:hover { border-color: #3a3a5a; }
+    .card-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #666;
+      margin-bottom: 8px;
+    }
+    .card-value {
+      font-size: 28px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.2;
+    }
+    .card-value.cyan { color: #00d4ff; }
+    .card-value.green { color: #00ff88; }
+    .card-value.orange { color: #ff8800; }
+    .card-value.red { color: #ff4444; }
+    .card-value.purple { color: #b388ff; }
+    .card-delta {
+      font-size: 11px;
+      color: #666;
+      margin-top: 4px;
+    }
+    .card-delta .up { color: #00ff88; }
+    .card-delta .down { color: #ff4444; }
+    .card-sparkline {
+      margin-top: 8px;
+      height: 32px;
+    }
+    .card-sparkline canvas { width: 100% !important; height: 32px !important; }
+
+    /* ── Section ──────────────────────────────────────────── */
+    .section {
+      margin-bottom: 24px;
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .section-title {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #00d4ff;
+    }
+    .section-badge {
+      font-size: 11px;
+      background: rgba(0,212,255,0.1);
+      color: #00d4ff;
+      padding: 3px 10px;
+      border-radius: 10px;
+    }
+
+    /* ── Chart Containers ─────────────────────────────────── */
+    .charts-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    @media (max-width: 1000px) {
+      .charts-row { grid-template-columns: 1fr; }
+    }
+    .chart-box {
+      background: #1a1a2e;
+      border: 1px solid #2a2a4a;
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .chart-box-title {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #888;
+      margin-bottom: 12px;
+    }
+    .chart-wrapper {
+      position: relative;
+      height: 220px;
+    }
+
+    /* ── Prometheus Raw Table ──────────────────────────────── */
+    .raw-metrics {
+      background: #1a1a2e;
+      border: 1px solid #2a2a4a;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .raw-metrics-header {
+      padding: 12px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #2a2a4a;
+      background: #16213e;
+    }
+    .raw-metrics-header h4 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #888;
+    }
+    .raw-toggle {
+      background: rgba(0,212,255,0.1);
+      border: 1px solid rgba(0,212,255,0.3);
+      color: #00d4ff;
+      padding: 4px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .raw-toggle:hover { background: rgba(0,212,255,0.2); }
+    .metrics-table-wrap {
+      max-height: 400px;
+      overflow-y: auto;
+      display: none;
+    }
+    .metrics-table-wrap.open { display: block; }
+    table.metrics-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    table.metrics-table th {
+      position: sticky;
+      top: 0;
+      background: #16213e;
+      color: #666;
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 1px;
+      padding: 8px 16px;
+      text-align: left;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    table.metrics-table td {
+      padding: 6px 16px;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 12px;
+    }
+    table.metrics-table tr:hover { background: rgba(255,255,255,0.02); }
+    .metric-name { color: #00d4ff; }
+    .metric-type { color: #666; font-size: 11px; }
+    .metric-value-cell { color: #e0e0e0; text-align: right; }
+    .metric-help { color: #555; font-size: 11px; font-style: italic; }
+
+    /* ── Histogram Bars ───────────────────────────────────── */
+    .histo-container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    @media (max-width: 1000px) {
+      .histo-container { grid-template-columns: 1fr; }
+    }
+
+    /* ── Scrollbar ────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0f0f1a; }
+    ::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+
+    /* ── Gauge ring ───────────────────────────────────────── */
+    .gauge-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .gauge-card {
+      background: #1a1a2e;
+      border: 1px solid #2a2a4a;
+      border-radius: 10px;
+      padding: 16px;
+      text-align: center;
+    }
+    .gauge-ring {
+      width: 100px; height: 100px;
+      margin: 0 auto 8px;
+      position: relative;
+    }
+    .gauge-ring svg { transform: rotate(-90deg); }
+    .gauge-ring .label {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 18px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .gauge-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #666;
+    }
+
+    /* ── Refresh selector ─────────────────────────────────── */
+    .refresh-select {
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      color: #888;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .refresh-select:focus { outline: none; border-color: #00d4ff; }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <div class="header-left">
+      <a href="/" class="logo">FLIGHT<span>EDGE</span></a>
+      <nav class="nav-links">
+        <a href="/">Map</a>
+        <a href="/metrics.html" class="active">Metrics</a>
+      </nav>
+    </div>
+    <div class="status-bar">
+      <label>
+        Refresh:
+        <select class="refresh-select" id="refreshInterval" onchange="changeRefresh()">
+          <option value="2000">2s</option>
+          <option value="5000" selected>5s</option>
+          <option value="10000">10s</option>
+          <option value="30000">30s</option>
+          <option value="0">Paused</option>
+        </select>
+      </label>
+      <span><span class="status-dot" id="statusDot"></span><span id="statusText">Connecting...</span></span>
+      <span id="lastUpdate"></span>
+    </div>
+  </header>
+
+  <div class="page">
+    <div class="page-title">Prometheus Metrics</div>
+    <div class="page-subtitle">Real-time application metrics from <code>/metrics</code> endpoint — auto-refreshing every <span id="intervalLabel">5s</span></div>
+
+    <!-- ── Top-Level KPIs ──────────────────────────────── -->
+    <div class="cards" id="kpiCards">
+      <div class="card">
+        <div class="card-label">Total HTTP Requests</div>
+        <div class="card-value cyan" id="kpiHTTPReqs">—</div>
+        <div class="card-delta" id="kpiHTTPReqsDelta"></div>
+        <div class="card-sparkline"><canvas id="sparkHTTP"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-label">Ingestion Requests</div>
+        <div class="card-value green" id="kpiIngestionReqs">—</div>
+        <div class="card-delta" id="kpiIngestionReqsDelta"></div>
+        <div class="card-sparkline"><canvas id="sparkIngestion"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-label">Flights Ingested</div>
+        <div class="card-value green" id="kpiFlightsIngested">—</div>
+        <div class="card-delta" id="kpiFlightsIngestedDelta"></div>
+        <div class="card-sparkline"><canvas id="sparkFlights"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-label">Query Requests</div>
+        <div class="card-value purple" id="kpiQueryReqs">—</div>
+        <div class="card-delta" id="kpiQueryReqsDelta"></div>
+        <div class="card-sparkline"><canvas id="sparkQuery"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-label">Ingestion Errors</div>
+        <div class="card-value red" id="kpiIngestionErrors">—</div>
+        <div class="card-delta" id="kpiIngestionErrorsDelta"></div>
+      </div>
+      <div class="card">
+        <div class="card-label">Query Errors</div>
+        <div class="card-value red" id="kpiQueryErrors">—</div>
+        <div class="card-delta" id="kpiQueryErrorsDelta"></div>
+      </div>
+    </div>
+
+    <!-- ── Memory Gauges ───────────────────────────────── -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-title">Memory</span>
+        <span class="section-badge" id="memState">—</span>
+      </div>
+    </div>
+    <div class="gauge-row">
+      <div class="gauge-card">
+        <div class="gauge-ring" id="gaugeHeap">
+          <svg viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#2a2a4a" stroke-width="6"/>
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#00d4ff" stroke-width="6"
+              stroke-dasharray="263.9" stroke-dashoffset="263.9" stroke-linecap="round"
+              id="gaugeHeapArc"/>
+          </svg>
+          <div class="label" style="color:#00d4ff" id="gaugeHeapLabel">—</div>
+        </div>
+        <div class="gauge-title">Heap Alloc</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-ring" id="gaugeHeapSys">
+          <svg viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#2a2a4a" stroke-width="6"/>
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#b388ff" stroke-width="6"
+              stroke-dasharray="263.9" stroke-dashoffset="263.9" stroke-linecap="round"
+              id="gaugeHeapSysArc"/>
+          </svg>
+          <div class="label" style="color:#b388ff" id="gaugeHeapSysLabel">—</div>
+        </div>
+        <div class="gauge-title">Heap Sys</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-ring" id="gaugeStack">
+          <svg viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#2a2a4a" stroke-width="6"/>
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#ff8800" stroke-width="6"
+              stroke-dasharray="263.9" stroke-dashoffset="263.9" stroke-linecap="round"
+              id="gaugeStackArc"/>
+          </svg>
+          <div class="label" style="color:#ff8800" id="gaugeStackLabel">—</div>
+        </div>
+        <div class="gauge-title">Stack In Use</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-ring" id="gaugeTotal">
+          <svg viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#2a2a4a" stroke-width="6"/>
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#ff4444" stroke-width="6"
+              stroke-dasharray="263.9" stroke-dashoffset="263.9" stroke-linecap="round"
+              id="gaugeTotalArc"/>
+          </svg>
+          <div class="label" style="color:#ff4444" id="gaugeTotalLabel">—</div>
+        </div>
+        <div class="gauge-title">Total Sys</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-ring">
+          <svg viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#2a2a4a" stroke-width="6"/>
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#00ff88" stroke-width="6"
+              stroke-dasharray="263.9" stroke-dashoffset="263.9" stroke-linecap="round"
+              id="gaugeGoroutinesArc"/>
+          </svg>
+          <div class="label" style="color:#00ff88" id="gaugeGoroutinesLabel">—</div>
+        </div>
+        <div class="gauge-title">Goroutines</div>
+      </div>
+    </div>
+
+    <!-- ── Time-Series Charts ──────────────────────────── -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-title">Time Series</span>
+        <span class="section-badge" id="historyLen">0 samples</span>
+      </div>
+    </div>
+    <div class="charts-row">
+      <div class="chart-box">
+        <div class="chart-box-title">Memory Usage Over Time</div>
+        <div class="chart-wrapper"><canvas id="chartMemory"></canvas></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-box-title">Goroutines &amp; GC Pauses</div>
+        <div class="chart-wrapper"><canvas id="chartRuntime"></canvas></div>
+      </div>
+    </div>
+    <div class="charts-row">
+      <div class="chart-box">
+        <div class="chart-box-title">Ontology (Nodes &amp; Edges)</div>
+        <div class="chart-wrapper"><canvas id="chartOntology"></canvas></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-box-title">Request Rates (cumulative)</div>
+        <div class="chart-wrapper"><canvas id="chartRequests"></canvas></div>
+      </div>
+    </div>
+
+    <!-- ── Latency Histograms ──────────────────────────── -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-title">Latency Distributions</span>
+      </div>
+    </div>
+    <div class="histo-container">
+      <div class="chart-box">
+        <div class="chart-box-title">HTTP Latency (seconds)</div>
+        <div class="chart-wrapper"><canvas id="chartHTTPHisto"></canvas></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-box-title">Query Latency (seconds)</div>
+        <div class="chart-wrapper"><canvas id="chartQueryHisto"></canvas></div>
+      </div>
+      <div class="chart-box">
+        <div class="chart-box-title">Ingestion Latency (seconds)</div>
+        <div class="chart-wrapper"><canvas id="chartIngestionHisto"></canvas></div>
+      </div>
+    </div>
+
+    <!-- ── Raw Prometheus Metrics ──────────────────────── -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-title">Raw Prometheus Output</span>
+      </div>
+    </div>
+    <div class="raw-metrics">
+      <div class="raw-metrics-header">
+        <h4>All Metrics (<span id="rawCount">0</span> metrics)</h4>
+        <button class="raw-toggle" onclick="toggleRaw()">Show / Hide</button>
+      </div>
+      <div class="metrics-table-wrap" id="rawWrap">
+        <table class="metrics-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Type</th>
+              <th style="text-align:right">Value</th>
+              <th>Help</th>
+            </tr>
+          </thead>
+          <tbody id="rawBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <script>
+    // ── Constants ──────────────────────────────────────────
+    const MAX_HISTORY = 120;        // keep 120 data points
+    const CIRCUMFERENCE = 2 * Math.PI * 42; // ~263.9
+    const MEM_LIMIT_MB = 512;       // edge memory limit for gauge scale
+
+    // ── History buffers ───────────────────────────────────
+    const history = {
+      labels: [],
+      heapMB: [],
+      heapSysMB: [],
+      stackMB: [],
+      sysMB: [],
+      goroutines: [],
+      gcSeconds: [],
+      ontologyNodes: [],
+      ontologyEdges: [],
+      ontologyFlights: [],
+      httpReqs: [],
+      ingestionReqs: [],
+      queryReqs: [],
+      flightsTotal: [],
+    };
+
+    // Previous values for delta calculation
+    let prev = {};
+
+    // Sparkline histories
+    const spark = {
+      http: [],
+      ingestion: [],
+      flights: [],
+      query: [],
+    };
+
+    // ── Chart.js defaults ─────────────────────────────────
+    Chart.defaults.color = '#888';
+    Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
+    Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+    Chart.defaults.font.size = 11;
+    Chart.defaults.animation.duration = 300;
+
+    function makeChartOpts(type, datasets, yTitle) {
+      return {
+        type,
+        data: { labels: [], datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, padding: 12 } } },
+          scales: {
+            x: { display: true, ticks: { maxTicksLimit: 8, maxRotation: 0 } },
+            y: { display: true, title: { display: !!yTitle, text: yTitle || '' }, beginAtZero: true },
+          },
+        },
+      };
+    }
+
+    // ── Create Charts ─────────────────────────────────────
+    const chartMemory = new Chart(document.getElementById('chartMemory'), makeChartOpts('line', [
+      { label: 'Heap Alloc', borderColor: '#00d4ff', backgroundColor: 'rgba(0,212,255,0.08)', data: [], fill: true, tension: 0.3, pointRadius: 0 },
+      { label: 'Heap Sys',   borderColor: '#b388ff', backgroundColor: 'rgba(179,136,255,0.06)', data: [], fill: true, tension: 0.3, pointRadius: 0 },
+      { label: 'Stack',      borderColor: '#ff8800', backgroundColor: 'rgba(255,136,0,0.06)', data: [], fill: true, tension: 0.3, pointRadius: 0 },
+      { label: 'Total Sys',  borderColor: '#ff4444', borderDash: [4,4], data: [], fill: false, tension: 0.3, pointRadius: 0 },
+    ], 'MB'));
+
+    const chartRuntime = new Chart(document.getElementById('chartRuntime'), makeChartOpts('line', [
+      { label: 'Goroutines', borderColor: '#00ff88', backgroundColor: 'rgba(0,255,136,0.08)', data: [], fill: true, tension: 0.3, pointRadius: 0, yAxisID: 'y' },
+      { label: 'GC Total (s)', borderColor: '#ffc800', borderDash: [4,4], data: [], fill: false, tension: 0.3, pointRadius: 0, yAxisID: 'y1' },
+    ]));
+    // add second y axis for GC
+    chartRuntime.options.scales.y1 = { display: true, position: 'right', title: { display: true, text: 'seconds' }, grid: { drawOnChartArea: false }, beginAtZero: true };
+    chartRuntime.options.scales.y.title = { display: true, text: 'count' };
+
+    const chartOntology = new Chart(document.getElementById('chartOntology'), makeChartOpts('line', [
+      { label: 'Total Nodes', borderColor: '#00d4ff', data: [], fill: false, tension: 0.3, pointRadius: 0 },
+      { label: 'Flights',     borderColor: '#00ff88', data: [], fill: false, tension: 0.3, pointRadius: 0 },
+      { label: 'Edges',       borderColor: '#ff8800', borderDash: [4,4], data: [], fill: false, tension: 0.3, pointRadius: 0 },
+    ], 'count'));
+
+    const chartRequests = new Chart(document.getElementById('chartRequests'), makeChartOpts('line', [
+      { label: 'HTTP Reqs',      borderColor: '#00d4ff', data: [], fill: false, tension: 0.3, pointRadius: 0 },
+      { label: 'Ingestion Reqs', borderColor: '#00ff88', data: [], fill: false, tension: 0.3, pointRadius: 0 },
+      { label: 'Query Reqs',     borderColor: '#b388ff', data: [], fill: false, tension: 0.3, pointRadius: 0 },
+      { label: 'Flights Total',  borderColor: '#ffc800', borderDash: [4,4], data: [], fill: false, tension: 0.3, pointRadius: 0 },
+    ], 'count'));
+
+    // Histogram bar charts
+    function makeHistoChart(canvasId) {
+      return new Chart(document.getElementById(canvasId), {
+        type: 'bar',
+        data: { labels: [], datasets: [{ label: 'Count', data: [], backgroundColor: 'rgba(0,212,255,0.6)', borderColor: '#00d4ff', borderWidth: 1 }] },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { title: { display: true, text: 'Bucket (s)' } },
+            y: { beginAtZero: true, title: { display: true, text: 'Count' } },
+          },
+        },
+      });
+    }
+    const chartHTTPHisto      = makeHistoChart('chartHTTPHisto');
+    const chartQueryHisto     = makeHistoChart('chartQueryHisto');
+    const chartIngestionHisto = makeHistoChart('chartIngestionHisto');
+    chartQueryHisto.data.datasets[0].backgroundColor = 'rgba(179,136,255,0.6)';
+    chartQueryHisto.data.datasets[0].borderColor = '#b388ff';
+    chartIngestionHisto.data.datasets[0].backgroundColor = 'rgba(0,255,136,0.6)';
+    chartIngestionHisto.data.datasets[0].borderColor = '#00ff88';
+
+    // Sparkline charts
+    function makeSparkline(canvasId, color) {
+      return new Chart(document.getElementById(canvasId), {
+        type: 'line',
+        data: { labels: [], datasets: [{ data: [], borderColor: color, borderWidth: 1.5, fill: true, backgroundColor: color.replace(')', ',0.1)').replace('rgb', 'rgba'), pointRadius: 0, tension: 0.4 }] },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+          scales: { x: { display: false }, y: { display: false, beginAtZero: true } },
+          animation: { duration: 0 },
+        },
+      });
+    }
+    const sparkHTTP      = makeSparkline('sparkHTTP', 'rgb(0,212,255)');
+    const sparkIngestion = makeSparkline('sparkIngestion', 'rgb(0,255,136)');
+    const sparkFlights   = makeSparkline('sparkFlights', 'rgb(0,255,136)');
+    const sparkQuery     = makeSparkline('sparkQuery', 'rgb(179,136,255)');
+
+    // ── Parse Prometheus text format ──────────────────────
+    function parsePrometheus(text) {
+      const metrics = {};
+      const helps = {};
+      const types = {};
+      const lines = text.split('\n');
+
+      for (const line of lines) {
+        if (line.startsWith('# HELP ')) {
+          const rest = line.slice(7);
+          const idx = rest.indexOf(' ');
+          if (idx > 0) helps[rest.slice(0, idx)] = rest.slice(idx + 1);
+        } else if (line.startsWith('# TYPE ')) {
+          const rest = line.slice(7);
+          const idx = rest.indexOf(' ');
+          if (idx > 0) types[rest.slice(0, idx)] = rest.slice(idx + 1);
+        } else if (line && !line.startsWith('#')) {
+          // metric_name{labels} value
+          const match = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:{}=".,\-+]*)[\s]+([0-9eE.+\-]+)$/);
+          if (match) {
+            metrics[match[1]] = parseFloat(match[2]);
+          }
+        }
+      }
+      return { metrics, helps, types };
+    }
+
+    // Extract histogram buckets from parsed metrics
+    function extractHistogram(metrics, prefix) {
+      const buckets = [];
+      for (const [key, val] of Object.entries(metrics)) {
+        const re = new RegExp(`^${prefix}_bucket\\{le="([^"]+)"\\}$`);
+        const m = key.match(re);
+        if (m) {
+          buckets.push({ le: m[1], count: val });
+        }
+      }
+      // Convert cumulative to differential
+      const labels = [];
+      const data = [];
+      for (let i = 0; i < buckets.length; i++) {
+        labels.push(buckets[i].le === '+Inf' ? '+Inf' : buckets[i].le);
+        const prev = i > 0 ? buckets[i - 1].count : 0;
+        data.push(Math.max(0, buckets[i].count - prev));
+      }
+      return { labels, data };
+    }
+
+    // ── Gauge helper ──────────────────────────────────────
+    function setGauge(arcId, labelId, valueMB, maxMB) {
+      const ratio = Math.min(valueMB / maxMB, 1);
+      const offset = CIRCUMFERENCE * (1 - ratio);
+      document.getElementById(arcId).setAttribute('stroke-dashoffset', offset);
+      document.getElementById(labelId).textContent = valueMB.toFixed(1);
+    }
+
+    function setGaugeCount(arcId, labelId, value, maxVal) {
+      const ratio = Math.min(value / maxVal, 1);
+      const offset = CIRCUMFERENCE * (1 - ratio);
+      document.getElementById(arcId).setAttribute('stroke-dashoffset', offset);
+      document.getElementById(labelId).textContent = value;
+    }
+
+    // ── Push to history with max length ───────────────────
+    function pushH(arr, val) {
+      arr.push(val);
+      if (arr.length > MAX_HISTORY) arr.shift();
+    }
+
+    // ── Format delta ──────────────────────────────────────
+    function formatDelta(elId, current, prevVal, suffix) {
+      const el = document.getElementById(elId);
+      if (prevVal == null) { el.textContent = ''; return; }
+      const diff = current - prevVal;
+      if (diff === 0) { el.innerHTML = '<span style="color:#666">no change</span>'; return; }
+      const cls = diff > 0 ? 'up' : 'down';
+      const sign = diff > 0 ? '+' : '';
+      el.innerHTML = `<span class="${cls}">${sign}${diff.toLocaleString()}${suffix || ''}</span> since last`;
+    }
+
+    // ── Main refresh ──────────────────────────────────────
+    async function refresh() {
+      try {
+        const res = await fetch('/metrics');
+        if (!res.ok) throw new Error('metrics fetch failed');
+        const text = await res.text();
+        const { metrics: m, helps, types } = parsePrometheus(text);
+
+        const now = new Date().toLocaleTimeString();
+
+        // ── Extract values ──────────────────────────────
+        const heapMB    = (m['go_memstats_heap_alloc_bytes'] || 0) / 1048576;
+        const heapSysMB = (m['go_memstats_heap_sys_bytes'] || 0) / 1048576;
+        const stackMB   = (m['go_memstats_stack_inuse_bytes'] || 0) / 1048576;
+        const sysMB     = (m['go_memstats_sys_bytes'] || 0) / 1048576;
+        const goroutines = m['go_goroutines'] || 0;
+        const gcSec     = m['go_gc_duration_seconds'] || 0;
+        const uptime    = m['process_uptime_seconds'] || 0;
+
+        const httpReqs       = m['flightedge_http_requests_total'] || 0;
+        const ingestionReqs  = m['flightedge_ingestion_requests_total'] || 0;
+        const ingestionErrs  = m['flightedge_ingestion_errors_total'] || 0;
+        const ingestionFlts  = m['flightedge_ingestion_flights_total'] || 0;
+        const queryReqs      = m['flightedge_query_requests_total'] || 0;
+        const queryErrs      = m['flightedge_query_errors_total'] || 0;
+        const ontNodes       = m['flightedge_ontology_nodes'] || 0;
+        const ontEdges       = m['flightedge_ontology_edges'] || 0;
+        const ontFlights     = m['flightedge_ontology_flights'] || 0;
+        const activeConns    = m['flightedge_active_connections'] || 0;
+
+        // ── KPI Cards ───────────────────────────────────
+        document.getElementById('kpiHTTPReqs').textContent = httpReqs.toLocaleString();
+        document.getElementById('kpiIngestionReqs').textContent = ingestionReqs.toLocaleString();
+        document.getElementById('kpiFlightsIngested').textContent = ingestionFlts.toLocaleString();
+        document.getElementById('kpiQueryReqs').textContent = queryReqs.toLocaleString();
+        document.getElementById('kpiIngestionErrors').textContent = ingestionErrs.toLocaleString();
+        document.getElementById('kpiQueryErrors').textContent = queryErrs.toLocaleString();
+
+        formatDelta('kpiHTTPReqsDelta', httpReqs, prev.httpReqs);
+        formatDelta('kpiIngestionReqsDelta', ingestionReqs, prev.ingestionReqs);
+        formatDelta('kpiFlightsIngestedDelta', ingestionFlts, prev.ingestionFlts);
+        formatDelta('kpiQueryReqsDelta', queryReqs, prev.queryReqs);
+        formatDelta('kpiIngestionErrorsDelta', ingestionErrs, prev.ingestionErrs);
+        formatDelta('kpiQueryErrorsDelta', queryErrs, prev.queryErrs);
+
+        prev = { httpReqs, ingestionReqs, ingestionFlts, queryReqs, ingestionErrs, queryErrs };
+
+        // ── Sparklines ──────────────────────────────────
+        pushH(spark.http, httpReqs);
+        pushH(spark.ingestion, ingestionReqs);
+        pushH(spark.flights, ingestionFlts);
+        pushH(spark.query, queryReqs);
+
+        function updateSparkline(chart, data) {
+          chart.data.labels = data.map((_, i) => i);
+          chart.data.datasets[0].data = data;
+          chart.update();
+        }
+        updateSparkline(sparkHTTP, spark.http);
+        updateSparkline(sparkIngestion, spark.ingestion);
+        updateSparkline(sparkFlights, spark.flights);
+        updateSparkline(sparkQuery, spark.query);
+
+        // ── Memory gauges ───────────────────────────────
+        setGauge('gaugeHeapArc', 'gaugeHeapLabel', heapMB, MEM_LIMIT_MB);
+        setGauge('gaugeHeapSysArc', 'gaugeHeapSysLabel', heapSysMB, MEM_LIMIT_MB);
+        setGauge('gaugeStackArc', 'gaugeStackLabel', stackMB, MEM_LIMIT_MB);
+        setGauge('gaugeTotalArc', 'gaugeTotalLabel', sysMB, MEM_LIMIT_MB);
+        setGaugeCount('gaugeGoroutinesArc', 'gaugeGoroutinesLabel', goroutines, Math.max(goroutines * 2, 50));
+
+        const uptimeStr = uptime > 3600
+          ? `${Math.floor(uptime/3600)}h ${Math.floor((uptime%3600)/60)}m`
+          : uptime > 60 ? `${Math.floor(uptime/60)}m ${Math.floor(uptime%60)}s`
+          : `${Math.floor(uptime)}s`;
+        document.getElementById('memState').textContent = `Uptime: ${uptimeStr} | Goroutines: ${goroutines} | Connections: ${activeConns}`;
+
+        // ── Push to history ─────────────────────────────
+        pushH(history.labels, now);
+        pushH(history.heapMB, heapMB);
+        pushH(history.heapSysMB, heapSysMB);
+        pushH(history.stackMB, stackMB);
+        pushH(history.sysMB, sysMB);
+        pushH(history.goroutines, goroutines);
+        pushH(history.gcSeconds, gcSec);
+        pushH(history.ontologyNodes, ontNodes);
+        pushH(history.ontologyEdges, ontEdges);
+        pushH(history.ontologyFlights, ontFlights);
+        pushH(history.httpReqs, httpReqs);
+        pushH(history.ingestionReqs, ingestionReqs);
+        pushH(history.queryReqs, queryReqs);
+        pushH(history.flightsTotal, ingestionFlts);
+
+        document.getElementById('historyLen').textContent = `${history.labels.length} samples`;
+
+        // ── Update time-series charts ───────────────────
+        function syncChart(chart, datasets) {
+          chart.data.labels = history.labels;
+          datasets.forEach((d, i) => { chart.data.datasets[i].data = d; });
+          chart.update();
+        }
+
+        syncChart(chartMemory, [history.heapMB, history.heapSysMB, history.stackMB, history.sysMB]);
+        syncChart(chartRuntime, [history.goroutines, history.gcSeconds]);
+        syncChart(chartOntology, [history.ontologyNodes, history.ontologyFlights, history.ontologyEdges]);
+        syncChart(chartRequests, [history.httpReqs, history.ingestionReqs, history.queryReqs, history.flightsTotal]);
+
+        // ── Histogram charts ────────────────────────────
+        function updateHisto(chart, prefix) {
+          const { labels, data } = extractHistogram(m, prefix);
+          chart.data.labels = labels;
+          chart.data.datasets[0].data = data;
+          chart.update();
+        }
+        updateHisto(chartHTTPHisto, 'flightedge_http_latency_seconds');
+        updateHisto(chartQueryHisto, 'flightedge_query_latency_seconds');
+        updateHisto(chartIngestionHisto, 'flightedge_ingestion_latency_seconds');
+
+        // ── Raw metrics table ───────────────────────────
+        const entries = Object.entries(m).sort((a, b) => a[0].localeCompare(b[0]));
+        document.getElementById('rawCount').textContent = entries.length;
+        const tbody = document.getElementById('rawBody');
+        tbody.innerHTML = entries.map(([name, val]) => {
+          const baseName = name.replace(/_bucket\{.*\}$/, '').replace(/_sum$/, '').replace(/_count$/, '');
+          const help = helps[baseName] || helps[name] || '';
+          const type = types[baseName] || types[name] || '';
+          const valStr = Number.isInteger(val) ? val.toLocaleString() : val.toFixed(6);
+          return `<tr>
+            <td class="metric-name">${name}</td>
+            <td class="metric-type">${type}</td>
+            <td class="metric-value-cell">${valStr}</td>
+            <td class="metric-help">${help}</td>
+          </tr>`;
+        }).join('');
+
+        setStatus(true);
+      } catch (err) {
+        console.error('Refresh error:', err);
+        setStatus(false);
+      }
+    }
+
+    // ── Status indicator ──────────────────────────────────
+    function setStatus(ok) {
+      const dot = document.getElementById('statusDot');
+      const text = document.getElementById('statusText');
+      const update = document.getElementById('lastUpdate');
+      if (ok) {
+        dot.className = 'status-dot';
+        text.textContent = 'Live';
+        update.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      } else {
+        dot.className = 'status-dot error';
+        text.textContent = 'Disconnected';
+      }
+    }
+
+    // ── Raw toggle ────────────────────────────────────────
+    function toggleRaw() {
+      document.getElementById('rawWrap').classList.toggle('open');
+    }
+
+    // ── Refresh interval ──────────────────────────────────
+    let refreshTimer = null;
+    function changeRefresh() {
+      const ms = parseInt(document.getElementById('refreshInterval').value);
+      document.getElementById('intervalLabel').textContent = ms ? (ms / 1000) + 's' : 'paused';
+      if (refreshTimer) clearInterval(refreshTimer);
+      if (ms > 0) refreshTimer = setInterval(refresh, ms);
+    }
+
+    // ── Bootstrap ─────────────────────────────────────────
+    refresh();
+    refreshTimer = setInterval(refresh, 5000);
+  </script>
+</body>
+</html>
