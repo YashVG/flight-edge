@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package flightedge.v1;
+
+option go_package = "github.com/yash/flightedge/gen/flightedge/v1;flightedgev1";
+
+import "google/protobuf/timestamp.proto";
+
+// FlightIngestService is the edge-to-core boundary for FlightEdge. Collectors
+// stream filtered OpenSky state batches to a core that owns the ontology.
+service FlightIngestService {
+  rpc StreamFlightStates(stream StreamFlightStatesRequest) returns (stream StreamFlightStatesResponse);
+}
+
+// StreamFlightStatesRequest is an ordered batch emitted by one collector. source_id and
+// sequence let the core identify retries and reject out-of-order batches.
+message StreamFlightStatesRequest {
+  string source_id = 1;
+  uint64 sequence = 2;
+  google.protobuf.Timestamp observed_at = 3;
+  repeated FlightState flights = 4;
+}
+
+// FlightState mirrors the state-vector fields FlightEdge currently needs to
+// update its in-memory ontology.
+message FlightState {
+  string icao24 = 1;
+  string callsign = 2;
+  string origin_country = 3;
+  double longitude = 4;
+  double latitude = 5;
+  double altitude = 6;
+  double velocity = 7;
+  double heading = 8;
+  bool on_ground = 9;
+  google.protobuf.Timestamp last_contact = 10;
+}
+
+// StreamFlightStatesResponse is sent only after the core has accepted or rejected a batch.
+message StreamFlightStatesResponse {
+  uint64 sequence = 1;
+  uint32 accepted = 2;
+  uint32 rejected = 3;
+  string reason = 4;
+}

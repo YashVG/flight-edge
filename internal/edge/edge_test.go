@@ -2,7 +2,6 @@ package edge
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 )
@@ -58,22 +57,13 @@ func TestAggressiveConfig(t *testing.T) {
 
 func TestLoadFromEnv(t *testing.T) {
 	// Set environment variables (using the actual env var names from config.go)
-	os.Setenv("MEMORY_MODE", "aggressive")
-	os.Setenv("MEMORY_LIMIT_MB", "256")
-	os.Setenv("GC_PERCENT", "30")
-	os.Setenv("DATA_RETENTION_HOURS", "4")
-	os.Setenv("MAX_NODES", "5000")
-	os.Setenv("ENABLE_COMPRESSION", "true")
-	os.Setenv("ENABLE_DEGRADATION", "true")
-	defer func() {
-		os.Unsetenv("MEMORY_MODE")
-		os.Unsetenv("MEMORY_LIMIT_MB")
-		os.Unsetenv("GC_PERCENT")
-		os.Unsetenv("DATA_RETENTION_HOURS")
-		os.Unsetenv("MAX_NODES")
-		os.Unsetenv("ENABLE_COMPRESSION")
-		os.Unsetenv("ENABLE_DEGRADATION")
-	}()
+	t.Setenv("MEMORY_MODE", "aggressive")
+	t.Setenv("MEMORY_LIMIT_MB", "256")
+	t.Setenv("GC_PERCENT", "30")
+	t.Setenv("DATA_RETENTION_HOURS", "4")
+	t.Setenv("MAX_NODES", "5000")
+	t.Setenv("ENABLE_COMPRESSION", "true")
+	t.Setenv("ENABLE_DEGRADATION", "true")
 
 	cfg := LoadFromEnv()
 

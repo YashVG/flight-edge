@@ -103,26 +103,26 @@ type FlightResult struct {
 
 // FlightInfo contains flight details with resolved relationships.
 type FlightInfo struct {
-	ID              string
-	FlightID        string
-	Callsign        string
-	Airline         string
-	DepartureCode   string
-	DepartureName   string
-	ArrivalCode     string
-	ArrivalName     string
-	ScheduledDep    time.Time
-	ActualDep       time.Time
-	ScheduledArr    time.Time
-	ActualArr       time.Time
-	Status          string
-	DelayMinutes    int
-	Altitude        float64
-	Velocity        float64
-	Heading         float64
-	Latitude        float64
-	Longitude       float64
-	OnGround        bool
+	ID            string
+	FlightID      string
+	Callsign      string
+	Airline       string
+	DepartureCode string
+	DepartureName string
+	ArrivalCode   string
+	ArrivalName   string
+	ScheduledDep  time.Time
+	ActualDep     time.Time
+	ScheduledArr  time.Time
+	ActualArr     time.Time
+	Status        string
+	DelayMinutes  int
+	Altitude      float64
+	Velocity      float64
+	Heading       float64
+	Latitude      float64
+	Longitude     float64
+	OnGround      bool
 }
 
 // FlightPath represents the route of a flight.
@@ -184,9 +184,9 @@ type AirportCongestion struct {
 	FlightCount    int                  `json:"flight_count"`
 	OnGround       int                  `json:"on_ground"`
 	Airborne       int                  `json:"airborne"`
-	Level          string               `json:"level"`            // "low", "moderate", "high", "critical"
-	Trend          string               `json:"trend"`            // "increasing", "stable", "decreasing"
-	PredictedLevel string               `json:"predicted_level"`  // predicted level in 10 min
+	Level          string               `json:"level"`           // "low", "moderate", "high", "critical"
+	Trend          string               `json:"trend"`           // "increasing", "stable", "decreasing"
+	PredictedLevel string               `json:"predicted_level"` // predicted level in 10 min
 	PredictedCount int                  `json:"predicted_count"`
 	AvgCount       float64              `json:"avg_count"`
 	PeakCount      int                  `json:"peak_count"`
@@ -352,14 +352,14 @@ func (ct *CongestionTracker) Codes() []string {
 
 // DelayPrediction holds prediction results.
 type DelayPrediction struct {
-	FlightID         string
-	PredictedDelay   time.Duration
-	Confidence       float64 // 0.0 to 1.0
-	Factors          []DelayFactor
-	HistoricalAvg    time.Duration
-	WeatherImpact    time.Duration
+	FlightID          string
+	PredictedDelay    time.Duration
+	Confidence        float64 // 0.0 to 1.0
+	Factors           []DelayFactor
+	HistoricalAvg     time.Duration
+	WeatherImpact     time.Duration
 	AirportCongestion time.Duration
-	Elapsed          time.Duration
+	Elapsed           time.Duration
 }
 
 // DelayFactor describes a contributing factor to predicted delay.
@@ -375,15 +375,16 @@ type DelayFactor struct {
 
 // AirlineIndex provides O(1) lookup of flights by airline.
 type AirlineIndex struct {
-	mu      sync.RWMutex
-	byCode  map[string][]string // airline code → flight node IDs
-	dirty   bool
+	mu       sync.RWMutex
+	byCode   map[string][]string // airline code → flight node IDs
+	byFlight map[string]string   // flight node ID → airline code
 }
 
 // NewAirlineIndex creates an airline index.
 func NewAirlineIndex() *AirlineIndex {
 	return &AirlineIndex{
-		byCode: make(map[string][]string, 64),
+		byCode:   make(map[string][]string, 64),
+		byFlight: make(map[string]string, 1024),
 	}
 }
 
@@ -391,17 +392,49 @@ func NewAirlineIndex() *AirlineIndex {
 func (idx *AirlineIndex) Add(airlineCode, flightNodeID string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+
+	if previousCode, exists := idx.byFlight[flightNodeID]; exists {
+		if previousCode == airlineCode {
+			return
+		}
+		idx.removeFromCodeLocked(previousCode, flightNodeID)
+	}
+
 	idx.byCode[airlineCode] = append(idx.byCode[airlineCode], flightNodeID)
+	idx.byFlight[flightNodeID] = airlineCode
 }
 
 // Remove removes a flight from its airline's list.
 func (idx *AirlineIndex) Remove(airlineCode, flightNodeID string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	idx.removeFromCodeLocked(airlineCode, flightNodeID)
+	if idx.byFlight[flightNodeID] == airlineCode {
+		delete(idx.byFlight, flightNodeID)
+	}
+}
+
+// RemoveFlight removes a flight regardless of its current airline assignment.
+func (idx *AirlineIndex) RemoveFlight(flightNodeID string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	airlineCode, exists := idx.byFlight[flightNodeID]
+	if !exists {
+		return
+	}
+	idx.removeFromCodeLocked(airlineCode, flightNodeID)
+	delete(idx.byFlight, flightNodeID)
+}
+
+func (idx *AirlineIndex) removeFromCodeLocked(airlineCode, flightNodeID string) {
 	flights := idx.byCode[airlineCode]
 	for i, id := range flights {
 		if id == flightNodeID {
 			idx.byCode[airlineCode] = append(flights[:i], flights[i+1:]...)
+			if len(idx.byCode[airlineCode]) == 0 {
+				delete(idx.byCode, airlineCode)
+			}
 			return
 		}
 	}
@@ -411,21 +444,25 @@ func (idx *AirlineIndex) Remove(airlineCode, flightNodeID string) {
 func (idx *AirlineIndex) Get(airlineCode string) []string {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	return idx.byCode[airlineCode]
+	return append([]string(nil), idx.byCode[airlineCode]...)
 }
 
 // AirportFlightIndex maps airports to their flights.
 type AirportFlightIndex struct {
-	mu         sync.RWMutex
-	departures map[string][]string // airport code → departing flight IDs
-	arrivals   map[string][]string // airport code → arriving flight IDs
+	mu                sync.RWMutex
+	departures        map[string][]string // airport code → departing flight IDs
+	arrivals          map[string][]string // airport code → arriving flight IDs
+	departureByFlight map[string]string   // flight node ID → departure code
+	arrivalByFlight   map[string]string   // flight node ID → arrival code
 }
 
 // NewAirportFlightIndex creates an airport-flight index.
 func NewAirportFlightIndex() *AirportFlightIndex {
 	return &AirportFlightIndex{
-		departures: make(map[string][]string, 256),
-		arrivals:   make(map[string][]string, 256),
+		departures:        make(map[string][]string, 256),
+		arrivals:          make(map[string][]string, 256),
+		departureByFlight: make(map[string]string, 1024),
+		arrivalByFlight:   make(map[string]string, 1024),
 	}
 }
 
@@ -433,42 +470,96 @@ func NewAirportFlightIndex() *AirportFlightIndex {
 func (idx *AirportFlightIndex) AddDeparture(airportCode, flightNodeID string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+
+	if previousCode, exists := idx.departureByFlight[flightNodeID]; exists {
+		if previousCode == airportCode {
+			return
+		}
+		idx.departures[previousCode] = removeID(idx.departures[previousCode], flightNodeID)
+		if len(idx.departures[previousCode]) == 0 {
+			delete(idx.departures, previousCode)
+		}
+	}
+
 	idx.departures[airportCode] = append(idx.departures[airportCode], flightNodeID)
+	idx.departureByFlight[flightNodeID] = airportCode
 }
 
 // AddArrival indexes a flight arriving at an airport.
 func (idx *AirportFlightIndex) AddArrival(airportCode, flightNodeID string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+
+	if previousCode, exists := idx.arrivalByFlight[flightNodeID]; exists {
+		if previousCode == airportCode {
+			return
+		}
+		idx.arrivals[previousCode] = removeID(idx.arrivals[previousCode], flightNodeID)
+		if len(idx.arrivals[previousCode]) == 0 {
+			delete(idx.arrivals, previousCode)
+		}
+	}
+
 	idx.arrivals[airportCode] = append(idx.arrivals[airportCode], flightNodeID)
+	idx.arrivalByFlight[flightNodeID] = airportCode
+}
+
+// RemoveFlight removes a flight from both departure and arrival indexes.
+func (idx *AirportFlightIndex) RemoveFlight(flightNodeID string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	if code, exists := idx.departureByFlight[flightNodeID]; exists {
+		idx.departures[code] = removeID(idx.departures[code], flightNodeID)
+		if len(idx.departures[code]) == 0 {
+			delete(idx.departures, code)
+		}
+		delete(idx.departureByFlight, flightNodeID)
+	}
+	if code, exists := idx.arrivalByFlight[flightNodeID]; exists {
+		idx.arrivals[code] = removeID(idx.arrivals[code], flightNodeID)
+		if len(idx.arrivals[code]) == 0 {
+			delete(idx.arrivals, code)
+		}
+		delete(idx.arrivalByFlight, flightNodeID)
+	}
 }
 
 // GetDepartures returns flight IDs departing from an airport.
 func (idx *AirportFlightIndex) GetDepartures(airportCode string) []string {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	return idx.departures[airportCode]
+	return append([]string(nil), idx.departures[airportCode]...)
 }
 
 // GetArrivals returns flight IDs arriving at an airport.
 func (idx *AirportFlightIndex) GetArrivals(airportCode string) []string {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	return idx.arrivals[airportCode]
+	return append([]string(nil), idx.arrivals[airportCode]...)
+}
+
+func removeID(ids []string, target string) []string {
+	for i, id := range ids {
+		if id == target {
+			return append(ids[:i], ids[i+1:]...)
+		}
+	}
+	return ids
 }
 
 // GetAll returns all flights (departures + arrivals) for an airport.
 func (idx *AirportFlightIndex) GetAll(airportCode string) []string {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	
+
 	deps := idx.departures[airportCode]
 	arrs := idx.arrivals[airportCode]
-	
+
 	// Deduplicate
 	seen := make(map[string]struct{}, len(deps)+len(arrs))
 	result := make([]string, 0, len(deps)+len(arrs))
-	
+
 	for _, id := range deps {
 		if _, ok := seen[id]; !ok {
 			seen[id] = struct{}{}
@@ -491,26 +582,26 @@ func (idx *AirportFlightIndex) GetAll(airportCode string) []string {
 // DelayHistory tracks historical delay patterns.
 type DelayHistory struct {
 	mu sync.RWMutex
-	
+
 	// By route (departure-arrival pair)
 	byRoute map[string]*RouteStats
-	
+
 	// By airline
 	byAirline map[string]*AirlineStats
-	
+
 	// By airport
 	byAirport map[string]*AirportStats
-	
+
 	// By hour of day (0-23)
 	byHour [24]*HourStats
 }
 
 // RouteStats holds delay statistics for a route.
 type RouteStats struct {
-	TotalFlights  int
-	TotalDelay    time.Duration
-	DelayedCount  int
-	MaxDelay      time.Duration
+	TotalFlights int
+	TotalDelay   time.Duration
+	DelayedCount int
+	MaxDelay     time.Duration
 }
 
 // AirlineStats holds delay statistics for an airline.
@@ -552,9 +643,9 @@ func NewDelayHistory() *DelayHistory {
 func (h *DelayHistory) Record(depCode, arrCode, airline string, scheduledDep time.Time, delay time.Duration) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	
+
 	routeKey := depCode + "-" + arrCode
-	
+
 	// Route stats
 	rs, ok := h.byRoute[routeKey]
 	if !ok {
@@ -569,7 +660,7 @@ func (h *DelayHistory) Record(depCode, arrCode, airline string, scheduledDep tim
 	if delay > rs.MaxDelay {
 		rs.MaxDelay = delay
 	}
-	
+
 	// Airline stats
 	as, ok := h.byAirline[airline]
 	if !ok {
@@ -581,7 +672,7 @@ func (h *DelayHistory) Record(depCode, arrCode, airline string, scheduledDep tim
 	if delay > 0 {
 		as.DelayedCount++
 	}
-	
+
 	// Airport stats (departure)
 	aps, ok := h.byAirport[depCode]
 	if !ok {
@@ -593,7 +684,7 @@ func (h *DelayHistory) Record(depCode, arrCode, airline string, scheduledDep tim
 	if delay > 0 {
 		aps.DelayedCount++
 	}
-	
+
 	// Hour stats
 	hour := scheduledDep.Hour()
 	h.byHour[hour].TotalFlights++
@@ -607,7 +698,7 @@ func (h *DelayHistory) Record(depCode, arrCode, airline string, scheduledDep tim
 func (h *DelayHistory) GetRouteAvgDelay(depCode, arrCode string) time.Duration {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	
+
 	rs, ok := h.byRoute[depCode+"-"+arrCode]
 	if !ok || rs.TotalFlights == 0 {
 		return 0
@@ -619,7 +710,7 @@ func (h *DelayHistory) GetRouteAvgDelay(depCode, arrCode string) time.Duration {
 func (h *DelayHistory) GetAirlineAvgDelay(airline string) time.Duration {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	
+
 	as, ok := h.byAirline[airline]
 	if !ok || as.TotalFlights == 0 {
 		return 0
@@ -631,7 +722,7 @@ func (h *DelayHistory) GetAirlineAvgDelay(airline string) time.Duration {
 func (h *DelayHistory) GetHourAvgDelay(hour int) time.Duration {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	
+
 	if hour < 0 || hour > 23 || h.byHour[hour].TotalFlights == 0 {
 		return 0
 	}
@@ -642,7 +733,7 @@ func (h *DelayHistory) GetHourAvgDelay(hour int) time.Duration {
 func (h *DelayHistory) SetAirportCongestion(code string, congestion float64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	
+
 	aps, ok := h.byAirport[code]
 	if !ok {
 		aps = &AirportStats{}
@@ -655,7 +746,7 @@ func (h *DelayHistory) SetAirportCongestion(code string, congestion float64) {
 func (h *DelayHistory) GetAirportCongestion(code string) float64 {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	
+
 	aps, ok := h.byAirport[code]
 	if !ok {
 		return 0
@@ -669,19 +760,19 @@ func (h *DelayHistory) GetAirportCongestion(code string) float64 {
 
 // Engine executes structured queries against an ontology graph.
 type Engine struct {
-	ont           *ontology.Engine
-	airlineIdx    *AirlineIndex
-	airportIdx    *AirportFlightIndex
-	history       *DelayHistory
-	congestion    *CongestionTracker
+	ont        *ontology.Engine
+	airlineIdx *AirlineIndex
+	airportIdx *AirportFlightIndex
+	history    *DelayHistory
+	congestion *CongestionTracker
 
 	// Result pools
-	flightPool    sync.Pool
+	flightPool sync.Pool
 }
 
 // New creates a query engine backed by the given ontology.
 func New(ont *ontology.Engine) *Engine {
-	return &Engine{
+	e := &Engine{
 		ont:        ont,
 		airlineIdx: NewAirlineIndex(),
 		airportIdx: NewAirportFlightIndex(),
@@ -689,10 +780,13 @@ func New(ont *ontology.Engine) *Engine {
 		congestion: NewCongestionTracker(),
 		flightPool: sync.Pool{
 			New: func() interface{} {
-				return make([]FlightInfo, 0, 64)
+				s := make([]FlightInfo, 0, 64)
+				return &s
 			},
 		},
 	}
+	ont.SetNodeRemovedCallback(e.RemoveFlight)
+	return e
 }
 
 // RebuildIndexes scans the ontology and rebuilds secondary indexes.
@@ -701,7 +795,7 @@ func (e *Engine) RebuildIndexes() {
 	// Clear existing indexes
 	e.airlineIdx = NewAirlineIndex()
 	e.airportIdx = NewAirportFlightIndex()
-	
+
 	// Scan all flights
 	e.ont.ForEachNodeOfType(ontology.TypeFlight, func(n *ontology.Node) bool {
 		// Index by airline (extract from callsign, first 3 chars typically ICAO code)
@@ -709,17 +803,17 @@ func (e *Engine) RebuildIndexes() {
 			airline := callsign[:3]
 			e.airlineIdx.Add(airline, n.ID)
 		}
-		
+
 		// Index by departure airport
 		if depCode, ok := n.GetString("departure_code"); ok {
 			e.airportIdx.AddDeparture(depCode, n.ID)
 		}
-		
+
 		// Index by arrival airport
 		if arrCode, ok := n.GetString("arrival_code"); ok {
 			e.airportIdx.AddArrival(arrCode, n.ID)
 		}
-		
+
 		return true
 	})
 }
@@ -735,6 +829,13 @@ func (e *Engine) IndexFlight(nodeID, callsign, depCode, arrCode string) {
 	if arrCode != "" {
 		e.airportIdx.AddArrival(arrCode, nodeID)
 	}
+}
+
+// RemoveFlight removes a flight from all query indexes. The ontology engine
+// invokes this hook after expiration, memory-pressure eviction, or deletion.
+func (e *Engine) RemoveFlight(nodeID string) {
+	e.airlineIdx.RemoveFlight(nodeID)
+	e.airportIdx.RemoveFlight(nodeID)
 }
 
 // RecordDelay adds delay data to historical tracking.
@@ -797,20 +898,20 @@ func (e *Engine) ListFlights(maxResults int) FlightResult {
 // GetFlightsByAirport returns flights associated with an airport within a time range.
 func (e *Engine) GetFlightsByAirport(airportCode string, tr TimeRange, maxResults int) FlightResult {
 	start := time.Now()
-	
+
 	// Use pre-built index for O(1) airport lookup
 	flightIDs := e.airportIdx.GetAll(airportCode)
-	
-	results := e.flightPool.Get().([]FlightInfo)
-	results = results[:0]
+
+	resultBuf := e.flightPool.Get().(*[]FlightInfo)
+	results := (*resultBuf)[:0]
 	total := 0
-	
+
 	for _, fid := range flightIDs {
 		node, ok := e.ont.GetNode(fid)
 		if !ok {
 			continue
 		}
-		
+
 		// Check time range
 		if !tr.Start.IsZero() || !tr.End.IsZero() {
 			if depTime, ok := node.GetTimestamp("scheduled_departure"); ok {
@@ -819,25 +920,26 @@ func (e *Engine) GetFlightsByAirport(airportCode string, tr TimeRange, maxResult
 				}
 			}
 		}
-		
+
 		total++
 		if maxResults > 0 && len(results) >= maxResults {
 			continue // Still count total
 		}
-		
+
 		results = append(results, e.nodeToFlightInfo(&node))
 	}
-	
+
 	// Sort by scheduled departure
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].ScheduledDep.Before(results[j].ScheduledDep)
 	})
-	
+
 	// Copy out of pool
 	final := make([]FlightInfo, len(results))
 	copy(final, results)
-	e.flightPool.Put(results)
-	
+	*resultBuf = results[:0]
+	e.flightPool.Put(resultBuf)
+
 	return FlightResult{
 		Flights: final,
 		Elapsed: time.Since(start),
@@ -848,17 +950,17 @@ func (e *Engine) GetFlightsByAirport(airportCode string, tr TimeRange, maxResult
 // GetFlightsByAirportDepartures returns only departing flights.
 func (e *Engine) GetFlightsByAirportDepartures(airportCode string, tr TimeRange, maxResults int) FlightResult {
 	start := time.Now()
-	
+
 	flightIDs := e.airportIdx.GetDepartures(airportCode)
 	results := make([]FlightInfo, 0, len(flightIDs))
 	total := 0
-	
+
 	for _, fid := range flightIDs {
 		node, ok := e.ont.GetNode(fid)
 		if !ok {
 			continue
 		}
-		
+
 		if !tr.Start.IsZero() || !tr.End.IsZero() {
 			if depTime, ok := node.GetTimestamp("scheduled_departure"); ok {
 				if !tr.Contains(depTime) {
@@ -866,15 +968,15 @@ func (e *Engine) GetFlightsByAirportDepartures(airportCode string, tr TimeRange,
 				}
 			}
 		}
-		
+
 		total++
 		if maxResults > 0 && len(results) >= maxResults {
 			continue
 		}
-		
+
 		results = append(results, e.nodeToFlightInfo(&node))
 	}
-	
+
 	return FlightResult{
 		Flights: results,
 		Elapsed: time.Since(start),
@@ -885,17 +987,17 @@ func (e *Engine) GetFlightsByAirportDepartures(airportCode string, tr TimeRange,
 // GetFlightsByAirportArrivals returns only arriving flights.
 func (e *Engine) GetFlightsByAirportArrivals(airportCode string, tr TimeRange, maxResults int) FlightResult {
 	start := time.Now()
-	
+
 	flightIDs := e.airportIdx.GetArrivals(airportCode)
 	results := make([]FlightInfo, 0, len(flightIDs))
 	total := 0
-	
+
 	for _, fid := range flightIDs {
 		node, ok := e.ont.GetNode(fid)
 		if !ok {
 			continue
 		}
-		
+
 		if !tr.Start.IsZero() || !tr.End.IsZero() {
 			if arrTime, ok := node.GetTimestamp("scheduled_arrival"); ok {
 				if !tr.Contains(arrTime) {
@@ -903,15 +1005,15 @@ func (e *Engine) GetFlightsByAirportArrivals(airportCode string, tr TimeRange, m
 				}
 			}
 		}
-		
+
 		total++
 		if maxResults > 0 && len(results) >= maxResults {
 			continue
 		}
-		
+
 		results = append(results, e.nodeToFlightInfo(&node))
 	}
-	
+
 	return FlightResult{
 		Flights: results,
 		Elapsed: time.Since(start),
@@ -927,18 +1029,18 @@ func (e *Engine) GetFlightsByAirportArrivals(airportCode string, tr TimeRange, m
 // If airline is non-empty, filters by airline code (first 3 chars of callsign).
 func (e *Engine) GetDelayedFlights(threshold time.Duration, airline string, maxResults int) FlightResult {
 	start := time.Now()
-	
+
 	var flightIDs []string
-	
+
 	// Use airline index if filtering by airline
 	if airline != "" {
 		flightIDs = e.airlineIdx.Get(airline)
 	}
-	
+
 	results := make([]FlightInfo, 0, 64)
 	total := 0
 	thresholdMinutes := int(threshold.Minutes())
-	
+
 	if airline != "" {
 		// Scan only flights from this airline
 		for _, fid := range flightIDs {
@@ -946,7 +1048,7 @@ func (e *Engine) GetDelayedFlights(threshold time.Duration, airline string, maxR
 			if !ok {
 				continue
 			}
-			
+
 			delay := e.getDelayMinutes(&node)
 			if delay >= thresholdMinutes {
 				total++
@@ -972,12 +1074,12 @@ func (e *Engine) GetDelayedFlights(threshold time.Duration, airline string, maxR
 			return true
 		})
 	}
-	
+
 	// Sort by delay descending
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].DelayMinutes > results[j].DelayMinutes
 	})
-	
+
 	return FlightResult{
 		Flights: results,
 		Elapsed: time.Since(start),
@@ -992,7 +1094,7 @@ func (e *Engine) GetDelayedFlights(threshold time.Duration, airline string, maxR
 // GetFlightPath retrieves the complete path for a flight including airports and weather.
 func (e *Engine) GetFlightPath(flightID string) (FlightPath, bool) {
 	start := time.Now()
-	
+
 	// Try flight_id index first
 	node, ok := e.ont.GetFlightByID(flightID)
 	if !ok {
@@ -1002,16 +1104,16 @@ func (e *Engine) GetFlightPath(flightID string) (FlightPath, bool) {
 			return FlightPath{}, false
 		}
 	}
-	
+
 	path := FlightPath{
 		FlightID: flightID,
 	}
-	
+
 	// Get callsign
 	if cs, ok := node.GetString("callsign"); ok {
 		path.Callsign = cs
 	}
-	
+
 	// Traverse relationships to get airports
 	e.ont.ForEachEdgeFrom(node.ID, func(rel ontology.RelationType, neighbor *ontology.Node) bool {
 		switch rel {
@@ -1026,7 +1128,7 @@ func (e *Engine) GetFlightPath(flightID string) (FlightPath, bool) {
 		}
 		return true
 	})
-	
+
 	// Add current position as waypoint if available
 	if lat, lon, ok := node.GetLocation("position"); ok {
 		wp := Waypoint{
@@ -1044,7 +1146,7 @@ func (e *Engine) GetFlightPath(flightID string) (FlightPath, bool) {
 		}
 		path.Waypoints = append(path.Waypoints, wp)
 	}
-	
+
 	path.Elapsed = time.Since(start)
 	return path, true
 }
@@ -1056,7 +1158,7 @@ func (e *Engine) GetFlightPath(flightID string) (FlightPath, bool) {
 // PredictDelay estimates the expected delay for a flight based on historical patterns.
 func (e *Engine) PredictDelay(flightID string) (DelayPrediction, bool) {
 	start := time.Now()
-	
+
 	// Get flight node
 	node, ok := e.ont.GetFlightByID(flightID)
 	if !ok {
@@ -1065,16 +1167,16 @@ func (e *Engine) PredictDelay(flightID string) (DelayPrediction, bool) {
 			return DelayPrediction{}, false
 		}
 	}
-	
+
 	pred := DelayPrediction{
 		FlightID: flightID,
 		Factors:  make([]DelayFactor, 0, 4),
 	}
-	
+
 	// Extract flight details
 	var depCode, arrCode, airline string
 	var scheduledDep time.Time
-	
+
 	if cs, ok := node.GetString("callsign"); ok && len(cs) >= 3 {
 		airline = cs[:3]
 	}
@@ -1087,10 +1189,10 @@ func (e *Engine) PredictDelay(flightID string) (DelayPrediction, bool) {
 	if sd, ok := node.GetTimestamp("scheduled_departure"); ok {
 		scheduledDep = sd
 	}
-	
+
 	var totalDelay time.Duration
 	var factors int
-	
+
 	// Factor 1: Historical route delay
 	routeDelay := e.history.GetRouteAvgDelay(depCode, arrCode)
 	if routeDelay > 0 {
@@ -1103,7 +1205,7 @@ func (e *Engine) PredictDelay(flightID string) (DelayPrediction, bool) {
 		factors++
 	}
 	pred.HistoricalAvg = routeDelay
-	
+
 	// Factor 2: Airline performance
 	airlineDelay := e.history.GetAirlineAvgDelay(airline)
 	if airlineDelay > 0 {
@@ -1115,7 +1217,7 @@ func (e *Engine) PredictDelay(flightID string) (DelayPrediction, bool) {
 		totalDelay += airlineDelay
 		factors++
 	}
-	
+
 	// Factor 3: Time of day
 	if !scheduledDep.IsZero() {
 		hourDelay := e.history.GetHourAvgDelay(scheduledDep.Hour())
@@ -1129,7 +1231,7 @@ func (e *Engine) PredictDelay(flightID string) (DelayPrediction, bool) {
 			factors++
 		}
 	}
-	
+
 	// Factor 4: Airport congestion
 	congestion := e.history.GetAirportCongestion(depCode)
 	if congestion > 0 {
@@ -1144,7 +1246,7 @@ func (e *Engine) PredictDelay(flightID string) (DelayPrediction, bool) {
 		totalDelay += congestionDelay
 		factors++
 	}
-	
+
 	// Factor 5: Weather impact (check affected_by relationships)
 	var weatherImpact time.Duration
 	e.ont.ForEachEdgeFrom(node.ID, func(rel ontology.RelationType, neighbor *ontology.Node) bool {
@@ -1168,7 +1270,7 @@ func (e *Engine) PredictDelay(flightID string) (DelayPrediction, bool) {
 		}
 		return true
 	})
-	
+
 	if weatherImpact > 0 {
 		pred.Factors = append(pred.Factors, DelayFactor{
 			Name:        "weather",
@@ -1179,18 +1281,18 @@ func (e *Engine) PredictDelay(flightID string) (DelayPrediction, bool) {
 		totalDelay += weatherImpact
 		factors++
 	}
-	
+
 	// Calculate predicted delay as weighted average
 	if factors > 0 {
 		pred.PredictedDelay = totalDelay / time.Duration(factors)
 	}
-	
+
 	// Calculate confidence based on data availability
 	pred.Confidence = float64(factors) / 5.0
 	if pred.Confidence > 1.0 {
 		pred.Confidence = 1.0
 	}
-	
+
 	pred.Elapsed = time.Since(start)
 	return pred, true
 }
@@ -1255,21 +1357,21 @@ func (e *Engine) getDelayMinutes(n *ontology.Node) int {
 	if delay, ok := n.GetFloat("delay_minutes"); ok {
 		return int(delay)
 	}
-	
+
 	// Calculate from scheduled vs actual
 	scheduled, hasScheduled := n.GetTimestamp("scheduled_departure")
 	actual, hasActual := n.GetTimestamp("actual_departure")
-	
+
 	if hasScheduled && hasActual && actual.After(scheduled) {
 		return int(actual.Sub(scheduled).Minutes())
 	}
-	
+
 	return 0
 }
 
 func (e *Engine) nodeToFlightInfo(n *ontology.Node) FlightInfo {
 	info := FlightInfo{ID: n.ID}
-	
+
 	if v, ok := n.GetString("flight_id"); ok {
 		info.FlightID = v
 	}
@@ -1322,15 +1424,15 @@ func (e *Engine) nodeToFlightInfo(n *ontology.Node) FlightInfo {
 	if v, ok := n.GetBool("on_ground"); ok {
 		info.OnGround = v
 	}
-	
+
 	info.DelayMinutes = e.getDelayMinutes(n)
-	
+
 	return info
 }
 
 func (e *Engine) nodeToAirportInfo(n *ontology.Node) AirportInfo {
 	info := AirportInfo{}
-	
+
 	if v, ok := n.GetString("code"); ok {
 		info.Code = v
 	}
@@ -1347,13 +1449,13 @@ func (e *Engine) nodeToAirportInfo(n *ontology.Node) AirportInfo {
 		info.Latitude = lat
 		info.Longitude = lon
 	}
-	
+
 	return info
 }
 
 func (e *Engine) nodeToWeatherInfo(n *ontology.Node) WeatherInfo {
 	info := WeatherInfo{}
-	
+
 	if v, ok := n.GetString("station"); ok {
 		info.Station = v
 	}
@@ -1372,7 +1474,7 @@ func (e *Engine) nodeToWeatherInfo(n *ontology.Node) WeatherInfo {
 	if v, ok := n.GetTimestamp("observed_at"); ok {
 		info.ObservedAt = v
 	}
-	
+
 	return info
 }
 

@@ -77,6 +77,15 @@ func WithNodeRemovedCallback(fn func(id string)) EngineOption {
 	}
 }
 
+// SetNodeRemovedCallback updates the callback invoked after a node is removed.
+// It is useful for components, such as query indexes, that are constructed
+// after the ontology engine itself.
+func (e *Engine) SetNodeRemovedCallback(fn func(id string)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onNodeRemoved = fn
+}
+
 // New creates an empty Engine with pre-allocated backing storage.
 func New(opts ...EngineOption) *Engine {
 	e := &Engine{
@@ -104,7 +113,7 @@ func (e *Engine) AddNode(n Node) {
 	e.mu.Lock()
 	if prev, exists := e.idIdx[n.ID]; exists {
 		e.removeSecondaryIndexesForSlot(prev)
-		e.removeFromTypeIndex(e.slots[prev].Node.Type, prev)
+		e.removeFromTypeIndex(e.slots[prev].Type, prev)
 		e.slots[prev].Node = n
 		e.slots[prev].out = e.slots[prev].out[:0]
 		e.slots[prev].in = e.slots[prev].in[:0]
@@ -145,7 +154,7 @@ func (e *Engine) RemoveNode(id string) bool {
 
 	e.removeEdgesFor(idx)
 	e.removeSecondaryIndexesForSlot(idx)
-	e.removeFromTypeIndex(e.slots[idx].Node.Type, idx)
+	e.removeFromTypeIndex(e.slots[idx].Type, idx)
 	delete(e.idIdx, id)
 
 	e.slots[idx] = slot{}
@@ -191,24 +200,24 @@ func (e *Engine) SetProp(id, key string, val PropVal) bool {
 	s := &e.slots[idx]
 
 	// Remove old secondary index entry for this key if indexed.
-	if s.Node.Type == TypeFlight && key == "flight_id" {
-		if old, ok := s.Node.GetString("flight_id"); ok {
+	if s.Type == TypeFlight && key == "flight_id" {
+		if old, ok := s.GetString("flight_id"); ok {
 			delete(e.flightIdx, old)
 		}
 	}
-	if s.Node.Type == TypeAirport && key == "code" {
-		if old, ok := s.Node.GetString("code"); ok {
+	if s.Type == TypeAirport && key == "code" {
+		if old, ok := s.GetString("code"); ok {
 			delete(e.airportIdx, old)
 		}
 	}
 
-	s.Node.Set(key, val)
+	s.Set(key, val)
 
 	// Add new secondary index entry.
-	if s.Node.Type == TypeFlight && key == "flight_id" && val.Type == PropString {
+	if s.Type == TypeFlight && key == "flight_id" && val.Type == PropString {
 		e.flightIdx[val.Str] = idx
 	}
-	if s.Node.Type == TypeAirport && key == "code" && val.Type == PropString {
+	if s.Type == TypeAirport && key == "code" && val.Type == PropString {
 		e.airportIdx[val.Str] = idx
 	}
 
@@ -286,7 +295,7 @@ func (e *Engine) EdgesFrom(id string) []Edge {
 	for _, he := range s.out {
 		edges = append(edges, Edge{
 			FromID:   id,
-			ToID:     e.slots[he.target].Node.ID,
+			ToID:     e.slots[he.target].ID,
 			Relation: he.rel,
 		})
 	}
@@ -306,7 +315,7 @@ func (e *Engine) EdgesTo(id string) []Edge {
 	edges := make([]Edge, 0, len(s.in))
 	for _, he := range s.in {
 		edges = append(edges, Edge{
-			FromID:   e.slots[he.target].Node.ID,
+			FromID:   e.slots[he.target].ID,
 			ToID:     id,
 			Relation: he.rel,
 		})
@@ -329,7 +338,7 @@ func (e *Engine) Prop(id, key string) (PropVal, bool) {
 	if !ok {
 		return PropVal{}, false
 	}
-	return e.slots[idx].Node.Get(key)
+	return e.slots[idx].Get(key)
 }
 
 // ForEachNode calls fn for every live node. Return false to stop early.
@@ -459,13 +468,13 @@ func (e *Engine) cloneNode(idx uint32) Node {
 // addSecondaryIndexesForSlot indexes the relevant properties of the node.
 func (e *Engine) addSecondaryIndexesForSlot(idx uint32) {
 	s := &e.slots[idx]
-	if s.Node.Type == TypeFlight {
-		if v, ok := s.Node.GetString("flight_id"); ok {
+	if s.Type == TypeFlight {
+		if v, ok := s.GetString("flight_id"); ok {
 			e.flightIdx[v] = idx
 		}
 	}
-	if s.Node.Type == TypeAirport {
-		if v, ok := s.Node.GetString("code"); ok {
+	if s.Type == TypeAirport {
+		if v, ok := s.GetString("code"); ok {
 			e.airportIdx[v] = idx
 		}
 	}
@@ -474,15 +483,15 @@ func (e *Engine) addSecondaryIndexesForSlot(idx uint32) {
 // removeSecondaryIndexesForSlot removes secondary index entries for the node.
 func (e *Engine) removeSecondaryIndexesForSlot(idx uint32) {
 	s := &e.slots[idx]
-	if s.Node.Type == TypeFlight {
-		if v, ok := s.Node.GetString("flight_id"); ok {
+	if s.Type == TypeFlight {
+		if v, ok := s.GetString("flight_id"); ok {
 			if e.flightIdx[v] == idx {
 				delete(e.flightIdx, v)
 			}
 		}
 	}
-	if s.Node.Type == TypeAirport {
-		if v, ok := s.Node.GetString("code"); ok {
+	if s.Type == TypeAirport {
+		if v, ok := s.GetString("code"); ok {
 			if e.airportIdx[v] == idx {
 				delete(e.airportIdx, v)
 			}

@@ -3,8 +3,6 @@
 # Simulates edge computing constraints: 512MB memory, 0.5 CPU
 # ==============================================================================
 
-version: "3.8"
-
 services:
   # ----------------------------------------------------------------------------
   # FlightEdge Application
@@ -35,11 +33,14 @@ services:
     
     ports:
       - "8080:8080"
+      - "9091:9091"
     
     environment:
       # Server configuration
       - HTTP_ADDR=0.0.0.0
       - HTTP_PORT=8080
+      - GRPC_ADDR=0.0.0.0
+      - GRPC_PORT=9091
       
       # OpenSky API credentials (optional, increases rate limits)
       # OAuth2 (preferred)
@@ -95,6 +96,7 @@ services:
     
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     
     command:
@@ -135,6 +137,7 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     
     networks:
       - flightedge-net

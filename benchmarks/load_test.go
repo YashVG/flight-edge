@@ -22,22 +22,21 @@ import (
 
 // LoadGenerator simulates realistic flight event ingestion.
 type LoadGenerator struct {
-	ont        *ontology.Engine
-	qe         *query.Engine
+	ont          *ontology.Engine
+	qe           *query.Engine
 	eventsPerSec int
-	duration   time.Duration
+	duration     time.Duration
 
 	// Stats
-	totalEvents  atomic.Int64
-	totalQueries atomic.Int64
-	errors       atomic.Int64
+	totalEvents atomic.Int64
+	errors      atomic.Int64
 }
 
 // NewLoadGenerator creates a load generator with the specified event rate.
 func NewLoadGenerator(eventsPerSec int, duration time.Duration) *LoadGenerator {
 	ont := ontology.New()
 	qe := query.New(ont)
-	
+
 	// Seed airports
 	airports := []string{"YVR", "JFK", "LAX", "ORD", "DFW", "SFO", "SEA", "LHR", "CDG", "NRT"}
 	for _, code := range airports {
@@ -45,7 +44,7 @@ func NewLoadGenerator(eventsPerSec int, duration time.Duration) *LoadGenerator {
 		n.SetString("code", code)
 		ont.AddNode(n)
 	}
-	
+
 	return &LoadGenerator{
 		ont:          ont,
 		qe:           qe,
@@ -57,7 +56,7 @@ func NewLoadGenerator(eventsPerSec int, duration time.Duration) *LoadGenerator {
 // generateFlight creates a realistic flight event.
 func (lg *LoadGenerator) generateFlight(i int) models.Flight {
 	airlines := []string{"UAL", "ACA", "DAL", "AAL", "BAW", "AFR", "DLH", "SWA", "JBU", "WJA"}
-	
+
 	return models.Flight{
 		ICAO24:      fmt.Sprintf("%06x", rand.Intn(0xFFFFFF)),
 		Callsign:    fmt.Sprintf("%s%04d", airlines[rand.Intn(len(airlines))], rand.Intn(9999)),
@@ -85,12 +84,12 @@ func (lg *LoadGenerator) ingestFlight(f models.Flight) {
 	n.SetBool("on_ground", f.OnGround)
 	n.SetTimestamp("last_contact", f.LastContact)
 	lg.ont.AddNode(n)
-	
+
 	// Index for queries
 	if len(f.Callsign) >= 3 {
 		lg.qe.IndexFlight(f.ICAO24, f.Callsign, "", "")
 	}
-	
+
 	lg.totalEvents.Add(1)
 }
 
@@ -122,21 +121,21 @@ func (lg *LoadGenerator) Run(ctx context.Context) LoadStats {
 func (lg *LoadGenerator) stats(startTime time.Time) LoadStats {
 	elapsed := time.Since(startTime)
 	return LoadStats{
-		Duration:       elapsed,
-		TotalEvents:   lg.totalEvents.Load(),
-		EventsPerSec:  float64(lg.totalEvents.Load()) / elapsed.Seconds(),
-		TotalNodes:    lg.ont.Size(),
-		Errors:        lg.errors.Load(),
+		Duration:     elapsed,
+		TotalEvents:  lg.totalEvents.Load(),
+		EventsPerSec: float64(lg.totalEvents.Load()) / elapsed.Seconds(),
+		TotalNodes:   lg.ont.Size(),
+		Errors:       lg.errors.Load(),
 	}
 }
 
 // LoadStats holds load test results.
 type LoadStats struct {
-	Duration      time.Duration
-	TotalEvents   int64
-	EventsPerSec  float64
-	TotalNodes    int
-	Errors        int64
+	Duration     time.Duration
+	TotalEvents  int64
+	EventsPerSec float64
+	TotalNodes   int
+	Errors       int64
 }
 
 // ---------------------------------------------------------------------------
@@ -145,18 +144,18 @@ type LoadStats struct {
 
 // ConcurrentQueryBench tests parallel query performance.
 type ConcurrentQueryBench struct {
-	ont        *ontology.Engine
-	qe         *query.Engine
-	
+	ont *ontology.Engine
+	qe  *query.Engine
+
 	// Results
-	latencies  []time.Duration
-	latencyMu  sync.Mutex
+	latencies []time.Duration
+	latencyMu sync.Mutex
 }
 
 // NewConcurrentQueryBench creates a benchmark with pre-populated data.
 func NewConcurrentQueryBench(numNodes int) *ConcurrentQueryBench {
 	ont := ontology.New()
-	
+
 	// Seed airports
 	airports := []string{"YVR", "JFK", "LAX", "ORD", "DFW", "SFO", "SEA", "LHR", "CDG", "NRT"}
 	for _, code := range airports {
@@ -164,7 +163,7 @@ func NewConcurrentQueryBench(numNodes int) *ConcurrentQueryBench {
 		n.SetString("code", code)
 		ont.AddNode(n)
 	}
-	
+
 	// Populate flights
 	airlines := []string{"UAL", "ACA", "DAL", "AAL", "BAW"}
 	for i := 0; i < numNodes; i++ {
@@ -178,10 +177,10 @@ func NewConcurrentQueryBench(numNodes int) *ConcurrentQueryBench {
 		n.SetLocation("position", 30.0+float64(i%20), -130.0+float64(i%60))
 		ont.AddNode(n)
 	}
-	
+
 	qe := query.New(ont)
 	qe.RebuildIndexes()
-	
+
 	return &ConcurrentQueryBench{
 		ont:       ont,
 		qe:        qe,
@@ -193,7 +192,7 @@ func NewConcurrentQueryBench(numNodes int) *ConcurrentQueryBench {
 func (cqb *ConcurrentQueryBench) RunConcurrent(numWorkers, queriesPerWorker int) ConcurrentStats {
 	var wg sync.WaitGroup
 	startTime := time.Now()
-	
+
 	// Different query types to simulate realistic load
 	queryFuncs := []func(){
 		func() {
@@ -215,47 +214,47 @@ func (cqb *ConcurrentQueryBench) RunConcurrent(numWorkers, queriesPerWorker int)
 			cqb.qe.PredictDelay("fl-100")
 		},
 	}
-	
+
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			
+
 			for q := 0; q < queriesPerWorker; q++ {
 				queryFunc := queryFuncs[(workerID+q)%len(queryFuncs)]
-				
+
 				start := time.Now()
 				queryFunc()
 				latency := time.Since(start)
-				
+
 				cqb.latencyMu.Lock()
 				cqb.latencies = append(cqb.latencies, latency)
 				cqb.latencyMu.Unlock()
 			}
 		}(w)
 	}
-	
+
 	wg.Wait()
 	totalTime := time.Since(startTime)
-	
+
 	return cqb.calculateStats(totalTime, numWorkers, queriesPerWorker)
 }
 
 func (cqb *ConcurrentQueryBench) calculateStats(totalTime time.Duration, workers, qpw int) ConcurrentStats {
 	cqb.latencyMu.Lock()
 	defer cqb.latencyMu.Unlock()
-	
+
 	if len(cqb.latencies) == 0 {
 		return ConcurrentStats{}
 	}
-	
+
 	// Sort for percentile calculation
 	sorted := make([]time.Duration, len(cqb.latencies))
 	copy(sorted, cqb.latencies)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	
+
 	totalQueries := workers * qpw
-	
+
 	return ConcurrentStats{
 		TotalQueries:  totalQueries,
 		TotalTime:     totalTime,
@@ -299,22 +298,22 @@ type ConcurrentStats struct {
 
 // MemoryProfile captures memory usage at a point in time.
 type MemoryProfile struct {
-	Alloc        uint64
-	TotalAlloc   uint64
-	Sys          uint64
-	HeapAlloc    uint64
-	HeapSys      uint64
-	HeapInuse    uint64
-	HeapObjects  uint64
-	StackInuse   uint64
-	NumGC        uint32
+	Alloc       uint64
+	TotalAlloc  uint64
+	Sys         uint64
+	HeapAlloc   uint64
+	HeapSys     uint64
+	HeapInuse   uint64
+	HeapObjects uint64
+	StackInuse  uint64
+	NumGC       uint32
 }
 
 // CaptureMemoryProfile returns current memory statistics.
 func CaptureMemoryProfile() MemoryProfile {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
-	
+
 	return MemoryProfile{
 		Alloc:       m.Alloc,
 		TotalAlloc:  m.TotalAlloc,
@@ -371,7 +370,7 @@ func BenchmarkLoadGenerator200EPS(b *testing.B) {
 func BenchmarkConcurrentQueries10Workers(b *testing.B) {
 	cqb := NewConcurrentQueryBench(10000)
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		cqb.latencies = cqb.latencies[:0]
 		cqb.RunConcurrent(10, 100)
@@ -382,7 +381,7 @@ func BenchmarkConcurrentQueries10Workers(b *testing.B) {
 func BenchmarkConcurrentQueries25Workers(b *testing.B) {
 	cqb := NewConcurrentQueryBench(10000)
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		cqb.latencies = cqb.latencies[:0]
 		cqb.RunConcurrent(25, 100)
@@ -393,7 +392,7 @@ func BenchmarkConcurrentQueries25Workers(b *testing.B) {
 func BenchmarkConcurrentQueries50Workers(b *testing.B) {
 	cqb := NewConcurrentQueryBench(10000)
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		cqb.latencies = cqb.latencies[:0]
 		cqb.RunConcurrent(50, 100)
@@ -404,14 +403,14 @@ func BenchmarkConcurrentQueries50Workers(b *testing.B) {
 func BenchmarkMemoryUnder512MB(b *testing.B) {
 	const maxMemoryMB = 512.0
 	const targetNodes = 100000
-	
+
 	for i := 0; i < b.N; i++ {
 		ont := ontology.New()
-		
+
 		// Force GC before measurement
 		runtime.GC()
 		before := CaptureMemoryProfile()
-		
+
 		// Populate with many nodes
 		for j := 0; j < targetNodes; j++ {
 			n := ontology.Node{ID: fmt.Sprintf("fl-%d", j), Type: ontology.TypeFlight}
@@ -421,16 +420,16 @@ func BenchmarkMemoryUnder512MB(b *testing.B) {
 			n.SetLocation("position", 30.0+float64(j%20), -100.0+float64(j%60))
 			ont.AddNode(n)
 		}
-		
+
 		// Force GC and measure
 		runtime.GC()
 		after := CaptureMemoryProfile()
-		
+
 		usedMB := after.HeapMB()
 		if usedMB > maxMemoryMB {
 			b.Fatalf("Memory exceeded %vMB limit: %.2fMB for %d nodes", maxMemoryMB, usedMB, targetNodes)
 		}
-		
+
 		b.ReportMetric(usedMB, "heap_MB")
 		b.ReportMetric(float64(targetNodes)/usedMB, "nodes_per_MB")
 		b.ReportMetric(after.HeapMB()-before.HeapMB(), "delta_MB")
@@ -440,12 +439,12 @@ func BenchmarkMemoryUnder512MB(b *testing.B) {
 // BenchmarkLatencyDistribution measures latency percentiles.
 func BenchmarkLatencyDistribution(b *testing.B) {
 	cqb := NewConcurrentQueryBench(50000)
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		cqb.latencies = cqb.latencies[:0]
 		stats := cqb.RunConcurrent(20, 500)
-		
+
 		b.ReportMetric(float64(stats.P50.Microseconds()), "p50_us")
 		b.ReportMetric(float64(stats.P95.Microseconds()), "p95_us")
 		b.ReportMetric(float64(stats.P99.Microseconds()), "p99_us")

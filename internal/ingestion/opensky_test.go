@@ -50,7 +50,7 @@ func TestFetchAllStates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/states/all", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(payload)
+		assert.NoError(t, json.NewEncoder(w).Encode(payload))
 	}))
 	defer srv.Close()
 
@@ -90,7 +90,7 @@ func TestFetchWithRetrySuccess(t *testing.T) {
 			return
 		}
 		payload := map[string]interface{}{"time": 1700000000, "states": [][]interface{}{}}
-		json.NewEncoder(w).Encode(payload)
+		assert.NoError(t, json.NewEncoder(w).Encode(payload))
 	}))
 	defer srv.Close()
 
@@ -121,7 +121,7 @@ func TestClientWithCredentials(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
-		json.NewEncoder(w).Encode(map[string]interface{}{"time": 0, "states": [][]interface{}{}})
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{"time": 0, "states": [][]interface{}{}}))
 	}))
 	defer srv.Close()
 
@@ -147,11 +147,11 @@ func TestClientWithOAuth2(t *testing.T) {
 		assert.Equal(t, "my-client-secret", r.FormValue("client_secret"))
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token": "test-token-123",
 			"expires_in":   1800,
 			"token_type":   "Bearer",
-		})
+		}))
 	}))
 	defer tokenSrv.Close()
 
@@ -159,7 +159,7 @@ func TestClientWithOAuth2(t *testing.T) {
 	var gotAuth string
 	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
-		json.NewEncoder(w).Encode(map[string]interface{}{"time": 0, "states": [][]interface{}{}})
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{"time": 0, "states": [][]interface{}{}}))
 	}))
 	defer apiSrv.Close()
 
@@ -181,11 +181,11 @@ func TestTokenManagerCachesToken(t *testing.T) {
 	callCount := 0
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token": "cached-token",
 			"expires_in":   1800,
 			"token_type":   "Bearer",
-		})
+		}))
 	}))
 	defer tokenSrv.Close()
 
@@ -209,11 +209,11 @@ func TestTokenManagerRefreshesExpiredToken(t *testing.T) {
 	callCount := 0
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token": "fresh-token",
 			"expires_in":   1, // Expires in 1 second
 			"token_type":   "Bearer",
-		})
+		}))
 	}))
 	defer tokenSrv.Close()
 
@@ -239,7 +239,8 @@ func TestTokenManagerRefreshesExpiredToken(t *testing.T) {
 func TestTokenManagerHandlesError(t *testing.T) {
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error":"invalid_client"}`))
+		_, err := w.Write([]byte(`{"error":"invalid_client"}`))
+		assert.NoError(t, err)
 	}))
 	defer tokenSrv.Close()
 
@@ -254,18 +255,18 @@ func TestTokenManagerHandlesError(t *testing.T) {
 func TestOAuth2PreferredOverBasicAuth(t *testing.T) {
 	// When both OAuth2 and Basic Auth are configured, OAuth2 should be used
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token": "oauth-token",
 			"expires_in":   1800,
 			"token_type":   "Bearer",
-		})
+		}))
 	}))
 	defer tokenSrv.Close()
 
 	var gotAuth string
 	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
-		json.NewEncoder(w).Encode(map[string]interface{}{"time": 0, "states": [][]interface{}{}})
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{"time": 0, "states": [][]interface{}{}}))
 	}))
 	defer apiSrv.Close()
 
@@ -354,7 +355,7 @@ func TestRateLimiterEnforcesInterval(t *testing.T) {
 
 func TestRateLimiterContextCancel(t *testing.T) {
 	rl := NewRateLimiter(1 * time.Second)
-	rl.Wait(context.Background()) // First call
+	require.NoError(t, rl.Wait(context.Background())) // First call
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Already cancelled
@@ -481,7 +482,7 @@ func TestProcessorProcessOnce(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(payload)
+		assert.NoError(t, json.NewEncoder(w).Encode(payload))
 	}))
 	defer srv.Close()
 
@@ -512,7 +513,7 @@ func TestProcessorProcessOnce(t *testing.T) {
 func TestProcessorStartStop(t *testing.T) {
 	payload := map[string]interface{}{"time": 0, "states": [][]interface{}{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(payload)
+		assert.NoError(t, json.NewEncoder(w).Encode(payload))
 	}))
 	defer srv.Close()
 
@@ -592,7 +593,7 @@ func TestProcessorBatchSplitting(t *testing.T) {
 	payload := map[string]interface{}{"time": 1700000000, "states": states}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(payload)
+		assert.NoError(t, json.NewEncoder(w).Encode(payload))
 	}))
 	defer srv.Close()
 

@@ -1,7 +1,11 @@
 bin/
+/flightedge
+video.mov
+.DS_Store
 *.exe
 *.test
 *.out
+coverage.html
 .env
 PROJECT_REVIEW.md
 credentials.json

@@ -105,7 +105,9 @@ func Decompress(cp CompressedProperties) (PropertyMap, error) {
 	if err := gzr.Reset(reader); err != nil {
 		return nil, err
 	}
-	defer gzr.Close()
+	defer func() {
+		_ = gzr.Close()
+	}()
 
 	// Decode with gob
 	var props PropertyMap
@@ -158,7 +160,9 @@ func DecompressBytes(data []byte) ([]byte, error) {
 	if err := gzr.Reset(reader); err != nil {
 		return nil, err
 	}
-	defer gzr.Close()
+	defer func() {
+		_ = gzr.Close()
+	}()
 
 	return io.ReadAll(gzr)
 }

@@ -35,7 +35,7 @@ func setupTestOntology() *ontology.Engine {
 
 func setupFullOntology() (*ontology.Engine, *Engine) {
 	ont := ontology.New()
-	
+
 	// Airports (using uppercase codes in IDs for consistency with flight edges)
 	jfk := ontology.Node{ID: "apt-JFK", Type: ontology.TypeAirport}
 	jfk.SetString("code", "JFK")
@@ -44,7 +44,7 @@ func setupFullOntology() (*ontology.Engine, *Engine) {
 	jfk.SetString("country", "US")
 	jfk.SetLocation("position", 40.6413, -73.7781)
 	ont.AddNode(jfk)
-	
+
 	lax := ontology.Node{ID: "apt-LAX", Type: ontology.TypeAirport}
 	lax.SetString("code", "LAX")
 	lax.SetString("name", "Los Angeles International")
@@ -52,7 +52,7 @@ func setupFullOntology() (*ontology.Engine, *Engine) {
 	lax.SetString("country", "US")
 	lax.SetLocation("position", 33.9416, -118.4085)
 	ont.AddNode(lax)
-	
+
 	yvr := ontology.Node{ID: "apt-YVR", Type: ontology.TypeAirport}
 	yvr.SetString("code", "YVR")
 	yvr.SetString("name", "Vancouver International")
@@ -60,7 +60,7 @@ func setupFullOntology() (*ontology.Engine, *Engine) {
 	yvr.SetString("country", "CA")
 	yvr.SetLocation("position", 49.1967, -123.1815)
 	ont.AddNode(yvr)
-	
+
 	// Weather
 	wxJfk := ontology.Node{ID: "wx-JFK", Type: ontology.TypeWeather}
 	wxJfk.SetString("station", "KJFK")
@@ -69,10 +69,10 @@ func setupFullOntology() (*ontology.Engine, *Engine) {
 	wxJfk.SetFloat("wind_speed", 30.0)
 	wxJfk.SetTimestamp("observed_at", time.Now())
 	ont.AddNode(wxJfk)
-	
+
 	// Base time for flights
 	baseTime := time.Date(2024, 6, 15, 10, 0, 0, 0, time.UTC)
-	
+
 	// Flights
 	flights := []struct {
 		id         string
@@ -93,7 +93,7 @@ func setupFullOntology() (*ontology.Engine, *Engine) {
 		{"fl-4", "AC400", "ACA400", "YVR", "LAX", baseTime.Add(3 * time.Hour), baseTime.Add(3 * time.Hour), "on_time", 40.0, -115.0, 30000, ""},
 		{"fl-5", "BA500", "BAW500", "JFK", "LAX", baseTime.Add(4 * time.Hour), baseTime.Add(4 * time.Hour), "scheduled", 0, 0, 0, ""},
 	}
-	
+
 	for _, f := range flights {
 		n := ontology.Node{ID: f.id, Type: ontology.TypeFlight}
 		n.SetString("flight_id", f.flightID)
@@ -108,7 +108,7 @@ func setupFullOntology() (*ontology.Engine, *Engine) {
 			n.SetFloat("altitude", f.altitude)
 		}
 		ont.AddNode(n)
-		
+
 		// Add edges
 		ont.AddEdge(f.id, "apt-"+f.depCode, ontology.RelDepartsFrom)
 		ont.AddEdge(f.id, "apt-"+f.arrCode, ontology.RelArrivesAt)
@@ -116,15 +116,15 @@ func setupFullOntology() (*ontology.Engine, *Engine) {
 			ont.AddEdge(f.id, f.affectedBy, ontology.RelAffectedBy)
 		}
 	}
-	
+
 	// Create query engine and build indexes
 	qe := New(ont)
-	
+
 	// Manually index flights (normally done during ingestion)
 	for _, f := range flights {
 		qe.IndexFlight(f.id, f.callsign, f.depCode, f.arrCode)
 	}
-	
+
 	return ont, qe
 }
 
@@ -179,7 +179,7 @@ func TestExecuteElapsed(t *testing.T) {
 
 func TestTimeRangeContains(t *testing.T) {
 	now := time.Now()
-	
+
 	tests := []struct {
 		name     string
 		tr       TimeRange
@@ -193,7 +193,7 @@ func TestTimeRangeContains(t *testing.T) {
 		{"start only", TimeRange{Start: now.Add(-1 * time.Hour)}, now, true},
 		{"end only", TimeRange{End: now.Add(1 * time.Hour)}, now, true},
 	}
-	
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.expected, tc.tr.Contains(tc.t))
@@ -207,20 +207,20 @@ func TestTimeRangeContains(t *testing.T) {
 
 func TestAirlineIndex(t *testing.T) {
 	idx := NewAirlineIndex()
-	
+
 	idx.Add("UAL", "flight-1")
 	idx.Add("UAL", "flight-2")
 	idx.Add("ACA", "flight-3")
-	
+
 	ual := idx.Get("UAL")
 	assert.Len(t, ual, 2)
 	assert.Contains(t, ual, "flight-1")
 	assert.Contains(t, ual, "flight-2")
-	
+
 	aca := idx.Get("ACA")
 	assert.Len(t, aca, 1)
 	assert.Contains(t, aca, "flight-3")
-	
+
 	// Remove
 	idx.Remove("UAL", "flight-1")
 	ual = idx.Get("UAL")
@@ -228,22 +228,61 @@ func TestAirlineIndex(t *testing.T) {
 	assert.Contains(t, ual, "flight-2")
 }
 
+func TestAirlineIndexIsIdempotentAndTracksReassignment(t *testing.T) {
+	idx := NewAirlineIndex()
+
+	idx.Add("UAL", "flight-1")
+	idx.Add("UAL", "flight-1")
+	assert.Equal(t, []string{"flight-1"}, idx.Get("UAL"))
+
+	idx.Add("ACA", "flight-1")
+	assert.Empty(t, idx.Get("UAL"))
+	assert.Equal(t, []string{"flight-1"}, idx.Get("ACA"))
+}
+
 func TestAirportFlightIndex(t *testing.T) {
 	idx := NewAirportFlightIndex()
-	
+
 	idx.AddDeparture("JFK", "fl-1")
 	idx.AddDeparture("JFK", "fl-2")
 	idx.AddArrival("JFK", "fl-3")
 	idx.AddArrival("LAX", "fl-1")
-	
+
 	deps := idx.GetDepartures("JFK")
 	assert.Len(t, deps, 2)
-	
+
 	arrs := idx.GetArrivals("JFK")
 	assert.Len(t, arrs, 1)
-	
+
 	all := idx.GetAll("JFK")
 	assert.Len(t, all, 3)
+}
+
+func TestAirportFlightIndexIsIdempotentAndTracksReassignment(t *testing.T) {
+	idx := NewAirportFlightIndex()
+
+	idx.AddDeparture("JFK", "fl-1")
+	idx.AddDeparture("JFK", "fl-1")
+	assert.Equal(t, []string{"fl-1"}, idx.GetDepartures("JFK"))
+
+	idx.AddDeparture("YVR", "fl-1")
+	assert.Empty(t, idx.GetDepartures("JFK"))
+	assert.Equal(t, []string{"fl-1"}, idx.GetDepartures("YVR"))
+}
+
+func TestOntologyRemovalCleansQueryIndexes(t *testing.T) {
+	ont := ontology.New()
+	flight := ontology.Node{ID: "fl-1", Type: ontology.TypeFlight}
+	flight.SetString("callsign", "UAL100")
+	ont.AddNode(flight)
+
+	qe := New(ont)
+	qe.IndexFlight("fl-1", "UAL100", "JFK", "LAX")
+	require.True(t, ont.RemoveNode("fl-1"))
+
+	assert.Empty(t, qe.airlineIdx.Get("UAL"))
+	assert.Empty(t, qe.airportIdx.GetAll("JFK"))
+	assert.Empty(t, qe.airportIdx.GetAll("LAX"))
 }
 
 // ---------------------------------------------------------------------------
@@ -252,12 +291,12 @@ func TestAirportFlightIndex(t *testing.T) {
 
 func TestGetFlightsByAirport(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	// Get all JFK flights
 	result := qe.GetFlightsByAirport("JFK", TimeRange{}, 0)
 	assert.Equal(t, 4, result.Total) // 3 departures + 1 arrival (fl-2 JFK->YVR counts as departure)
 	assert.Len(t, result.Flights, 4)
-	
+
 	// With max results
 	result = qe.GetFlightsByAirport("JFK", TimeRange{}, 2)
 	assert.Equal(t, 4, result.Total)
@@ -266,15 +305,15 @@ func TestGetFlightsByAirport(t *testing.T) {
 
 func TestGetFlightsByAirportWithTimeRange(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	baseTime := time.Date(2024, 6, 15, 10, 0, 0, 0, time.UTC)
-	
+
 	// First 2 hours only
 	tr := TimeRange{
 		Start: baseTime,
 		End:   baseTime.Add(2 * time.Hour),
 	}
-	
+
 	result := qe.GetFlightsByAirport("JFK", tr, 0)
 	// fl-1 (10:00), fl-2 (11:00) match
 	assert.GreaterOrEqual(t, result.Total, 2)
@@ -282,14 +321,14 @@ func TestGetFlightsByAirportWithTimeRange(t *testing.T) {
 
 func TestGetFlightsByAirportDepartures(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	result := qe.GetFlightsByAirportDepartures("JFK", TimeRange{}, 0)
 	assert.Equal(t, 3, result.Total) // UA100, UA200, BA500
 }
 
 func TestGetFlightsByAirportArrivals(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	result := qe.GetFlightsByAirportArrivals("JFK", TimeRange{}, 0)
 	assert.Equal(t, 1, result.Total) // AC300 YVR->JFK
 }
@@ -300,12 +339,12 @@ func TestGetFlightsByAirportArrivals(t *testing.T) {
 
 func TestGetDelayedFlights(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	// Any delay
 	result := qe.GetDelayedFlights(1*time.Minute, "", 0)
 	// fl-1: 15 min delay, fl-3: 45 min delay
 	assert.Equal(t, 2, result.Total)
-	
+
 	// Sorted by delay descending
 	if len(result.Flights) >= 2 {
 		assert.Greater(t, result.Flights[0].DelayMinutes, result.Flights[1].DelayMinutes)
@@ -314,7 +353,7 @@ func TestGetDelayedFlights(t *testing.T) {
 
 func TestGetDelayedFlightsByAirline(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	// Air Canada delays
 	result := qe.GetDelayedFlights(1*time.Minute, "ACA", 0)
 	assert.Equal(t, 1, result.Total) // Only AC300 is delayed
@@ -325,7 +364,7 @@ func TestGetDelayedFlightsByAirline(t *testing.T) {
 
 func TestGetDelayedFlightsWithThreshold(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	// Only delays >= 30 minutes
 	result := qe.GetDelayedFlights(30*time.Minute, "", 0)
 	assert.Equal(t, 1, result.Total) // Only fl-3 with 45 min delay
@@ -337,11 +376,11 @@ func TestGetDelayedFlightsWithThreshold(t *testing.T) {
 
 func TestGetFlightPath(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	// By flight_id
 	path, ok := qe.GetFlightPath("UA100")
 	require.True(t, ok)
-	
+
 	assert.Equal(t, "UA100", path.FlightID)
 	assert.Equal(t, "UAL100", path.Callsign)
 	assert.Equal(t, "JFK", path.Departure.Code)
@@ -350,11 +389,11 @@ func TestGetFlightPath(t *testing.T) {
 
 func TestGetFlightPathWithWeather(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	// fl-2 is affected by weather
 	path, ok := qe.GetFlightPath("UA200")
 	require.True(t, ok)
-	
+
 	assert.Len(t, path.WeatherAlerts, 1)
 	assert.Equal(t, "KJFK", path.WeatherAlerts[0].Station)
 	assert.Equal(t, "IFR", path.WeatherAlerts[0].Condition)
@@ -362,14 +401,14 @@ func TestGetFlightPathWithWeather(t *testing.T) {
 
 func TestGetFlightPathNotFound(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	_, ok := qe.GetFlightPath("NONEXISTENT")
 	assert.False(t, ok)
 }
 
 func TestGetFlightPathByNodeID(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	// By node ID directly
 	path, ok := qe.GetFlightPath("fl-1")
 	require.True(t, ok)
@@ -382,15 +421,15 @@ func TestGetFlightPathByNodeID(t *testing.T) {
 
 func TestPredictDelay(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	// Add some historical data
 	qe.RecordDelay("JFK", "LAX", "UAL", time.Now(), 20*time.Minute)
 	qe.RecordDelay("JFK", "LAX", "UAL", time.Now(), 10*time.Minute)
 	qe.RecordDelay("JFK", "LAX", "UAL", time.Now(), 30*time.Minute)
-	
+
 	pred, ok := qe.PredictDelay("UA100")
 	require.True(t, ok)
-	
+
 	assert.Equal(t, "UA100", pred.FlightID)
 	assert.True(t, pred.PredictedDelay > 0)
 	assert.True(t, pred.Confidence > 0)
@@ -399,11 +438,11 @@ func TestPredictDelay(t *testing.T) {
 
 func TestPredictDelayWithWeatherImpact(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	// UA200 is affected by IFR weather
 	pred, ok := qe.PredictDelay("UA200")
 	require.True(t, ok)
-	
+
 	// Should have weather impact factor
 	hasWeatherFactor := false
 	for _, f := range pred.Factors {
@@ -417,7 +456,7 @@ func TestPredictDelayWithWeatherImpact(t *testing.T) {
 
 func TestPredictDelayNotFound(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	_, ok := qe.PredictDelay("NONEXISTENT")
 	assert.False(t, ok)
 }
@@ -428,41 +467,41 @@ func TestPredictDelayNotFound(t *testing.T) {
 
 func TestDelayHistoryRouteStats(t *testing.T) {
 	h := NewDelayHistory()
-	
+
 	h.Record("JFK", "LAX", "UAL", time.Now(), 10*time.Minute)
 	h.Record("JFK", "LAX", "UAL", time.Now(), 20*time.Minute)
 	h.Record("JFK", "LAX", "UAL", time.Now(), 30*time.Minute)
-	
+
 	avg := h.GetRouteAvgDelay("JFK", "LAX")
 	assert.Equal(t, 20*time.Minute, avg)
 }
 
 func TestDelayHistoryAirlineStats(t *testing.T) {
 	h := NewDelayHistory()
-	
+
 	h.Record("JFK", "LAX", "UAL", time.Now(), 15*time.Minute)
 	h.Record("JFK", "SFO", "UAL", time.Now(), 25*time.Minute)
-	
+
 	avg := h.GetAirlineAvgDelay("UAL")
 	assert.Equal(t, 20*time.Minute, avg)
 }
 
 func TestDelayHistoryHourStats(t *testing.T) {
 	h := NewDelayHistory()
-	
+
 	morning := time.Date(2024, 1, 1, 8, 0, 0, 0, time.UTC)
 	h.Record("JFK", "LAX", "UAL", morning, 10*time.Minute)
 	h.Record("JFK", "SFO", "UAL", morning, 20*time.Minute)
-	
+
 	avg := h.GetHourAvgDelay(8)
 	assert.Equal(t, 15*time.Minute, avg)
 }
 
 func TestDelayHistoryAirportCongestion(t *testing.T) {
 	h := NewDelayHistory()
-	
+
 	h.SetAirportCongestion("JFK", 0.75)
-	
+
 	congestion := h.GetAirportCongestion("JFK")
 	assert.Equal(t, 0.75, congestion)
 }
@@ -476,12 +515,12 @@ func TestNodeSlicePool(t *testing.T) {
 	slice := acquireNodeSlice()
 	assert.NotNil(t, slice)
 	assert.Equal(t, 0, len(*slice))
-	
+
 	*slice = append(*slice, ontology.Node{ID: "test"})
 	assert.Equal(t, 1, len(*slice))
-	
+
 	releaseNodeSlice(slice)
-	
+
 	// Get from pool again - should be reset
 	slice2 := acquireNodeSlice()
 	assert.Equal(t, 0, len(*slice2))
@@ -492,10 +531,10 @@ func TestEdgeSlicePool(t *testing.T) {
 	slice := acquireEdgeSlice()
 	assert.NotNil(t, slice)
 	assert.Equal(t, 0, len(*slice))
-	
+
 	*slice = append(*slice, ontology.Edge{FromID: "a", ToID: "b"})
 	releaseEdgeSlice(slice)
-	
+
 	slice2 := acquireEdgeSlice()
 	assert.Equal(t, 0, len(*slice2))
 	releaseEdgeSlice(slice2)
@@ -507,27 +546,27 @@ func TestEdgeSlicePool(t *testing.T) {
 
 func TestRebuildIndexes(t *testing.T) {
 	ont := ontology.New()
-	
+
 	// Add flights with departure/arrival codes
 	f1 := ontology.Node{ID: "f1", Type: ontology.TypeFlight}
 	f1.SetString("callsign", "UAL100")
 	f1.SetString("departure_code", "JFK")
 	f1.SetString("arrival_code", "LAX")
 	ont.AddNode(f1)
-	
+
 	f2 := ontology.Node{ID: "f2", Type: ontology.TypeFlight}
 	f2.SetString("callsign", "UAL200")
 	f2.SetString("departure_code", "JFK")
 	f2.SetString("arrival_code", "SFO")
 	ont.AddNode(f2)
-	
+
 	qe := New(ont)
 	qe.RebuildIndexes()
-	
+
 	// Check airline index
 	ual := qe.airlineIdx.Get("UAL")
 	assert.Len(t, ual, 2)
-	
+
 	// Check airport index
 	jfkDeps := qe.airportIdx.GetDepartures("JFK")
 	assert.Len(t, jfkDeps, 2)
@@ -539,20 +578,20 @@ func TestRebuildIndexes(t *testing.T) {
 
 func TestQueryLatencyUnder50ms(t *testing.T) {
 	_, qe := setupFullOntology()
-	
+
 	// GetFlightsByAirport
 	result := qe.GetFlightsByAirport("JFK", TimeRange{}, 10)
 	assert.Less(t, result.Elapsed, 50*time.Millisecond)
-	
+
 	// GetDelayedFlights
 	delayResult := qe.GetDelayedFlights(1*time.Minute, "", 10)
 	assert.Less(t, delayResult.Elapsed, 50*time.Millisecond)
-	
+
 	// GetFlightPath
 	path, ok := qe.GetFlightPath("UA100")
 	require.True(t, ok)
 	assert.Less(t, path.Elapsed, 50*time.Millisecond)
-	
+
 	// PredictDelay
 	pred, ok := qe.PredictDelay("UA100")
 	require.True(t, ok)

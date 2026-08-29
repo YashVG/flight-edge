@@ -2,8 +2,9 @@ APP_NAME := flightedge
 BUILD_DIR := bin
 DOCKER_IMAGE := flightedge:latest
 DOCKER_COMPOSE := docker/docker-compose.yml
+GOLANGCI_LINT_VERSION := v2.12.2
 
-.PHONY: build test bench docker clean lint run dev help
+.PHONY: build build-collector proto test bench docker clean lint lint-install run run-core run-collector dev help
 
 # Default target
 .DEFAULT_GOAL := help
@@ -14,6 +15,16 @@ build: ## Build the application binary
 	@mkdir -p $(BUILD_DIR)
 	go build -o $(BUILD_DIR)/$(APP_NAME) ./cmd/flightedge/
 
+build-collector: ## Build the edge collector binary
+	@echo "Building $(APP_NAME)-collector..."
+	@mkdir -p $(BUILD_DIR)
+	go build -o $(BUILD_DIR)/$(APP_NAME)-collector ./cmd/flightedge-collector/
+
+proto: ## Lint and regenerate checked-in protobuf and gRPC Go stubs (requires Buf 1.57.2)
+	@command -v buf >/dev/null 2>&1 || { echo "Buf 1.57.2 is required; install it with: go install github.com/bufbuild/buf/cmd/buf@v1.57.2"; exit 1; }
+	buf lint
+	buf generate
+
 build-optimized: ## Build with optimizations (smaller binary)
 	@echo "Building optimized $(APP_NAME)..."
 	@mkdir -p $(BUILD_DIR)
@@ -23,21 +34,30 @@ build-optimized: ## Build with optimizations (smaller binary)
 run: build ## Build and run the application
 	./$(BUILD_DIR)/$(APP_NAME)
 
+run-core: ## Run a core that accepts remote collector batches
+	ENABLE_INGESTION=false go run ./cmd/flightedge
+
+run-collector: ## Run an OpenSky collector against FLIGHTEDGE_CORE_GRPC_ADDR
+	go run ./cmd/flightedge-collector
+
 dev: ## Run with live reload (requires air: go install github.com/cosmtrek/air@latest)
 	@command -v air >/dev/null 2>&1 || { echo "Installing air..."; go install github.com/cosmtrek/air@latest; }
 	air
 
 ## Test
-test: ## Run all tests
-	go test -v -race -count=1 ./...
+test: ## Run deterministic unit and integration tests
+	go test -v -race -short -count=1 ./...
 
 test-short: ## Run tests (skip long-running)
 	go test -v -short -count=1 ./...
 
 test-cover: ## Run tests with coverage report
-	go test -v -race -coverprofile=coverage.out ./...
+	go test -v -race -short -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
+
+test-performance: ## Run hardware-sensitive performance validation
+	go test -v -count=1 -run "TestPerformanceRegression|TestLatencyP99Under50ms|TestMemoryConstraint512MB|TestConcurrentQueries|TestLoadGenerator|TestSustainedLoad" -timeout=10m ./benchmarks/
 
 ## Benchmarks
 bench: ## Run all benchmarks
@@ -81,7 +101,11 @@ profile-all: profile-cpu profile-mem ## Generate all profiles
 ## Lint
 lint: ## Run linters
 	go vet ./...
-	@command -v staticcheck >/dev/null 2>&1 && staticcheck ./... || echo "staticcheck not installed"
+	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint is required; run 'make lint-install'"; exit 1; }
+	golangci-lint run ./...
+
+lint-install: ## Install the CI-pinned golangci-lint version
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 fmt: ## Format code
 	go fmt ./...
@@ -103,26 +127,26 @@ docker-shell: ## Shell into Docker container
 	docker run --rm -it --entrypoint /bin/sh $(DOCKER_IMAGE)
 
 ## Docker Compose
-up: ## Start all services with docker-compose
-	docker-compose -f $(DOCKER_COMPOSE) up -d
+up: ## Start all services with Docker Compose
+	docker compose -f $(DOCKER_COMPOSE) up -d
 
 up-monitoring: ## Start all services including Grafana
-	docker-compose -f $(DOCKER_COMPOSE) --profile monitoring up -d
+	docker compose -f $(DOCKER_COMPOSE) --profile monitoring up -d
 
 down: ## Stop all services
-	docker-compose -f $(DOCKER_COMPOSE) down
+	docker compose -f $(DOCKER_COMPOSE) down
 
 logs: ## View logs
-	docker-compose -f $(DOCKER_COMPOSE) logs -f
+	docker compose -f $(DOCKER_COMPOSE) logs -f
 
 logs-app: ## View application logs only
-	docker-compose -f $(DOCKER_COMPOSE) logs -f flightedge
+	docker compose -f $(DOCKER_COMPOSE) logs -f flightedge
 
 ps: ## Show running containers
-	docker-compose -f $(DOCKER_COMPOSE) ps
+	docker compose -f $(DOCKER_COMPOSE) ps
 
 restart: ## Restart services
-	docker-compose -f $(DOCKER_COMPOSE) restart
+	docker compose -f $(DOCKER_COMPOSE) restart
 
 ## Utilities
 clean: ## Clean build artifacts

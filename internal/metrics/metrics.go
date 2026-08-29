@@ -178,9 +178,9 @@ func (c *Counter) Value() int64 {
 
 // Gauge is a metric that can go up and down.
 type Gauge struct {
-	name  string
-	help  string
-	bits  atomic.Uint64
+	name string
+	help string
+	bits atomic.Uint64
 }
 
 // Set sets the gauge to the given value.
@@ -298,26 +298,32 @@ func Default() *Registry {
 
 var (
 	// Ingestion metrics
-	IngestionRequests     = defaultRegistry.Counter("flightedge_ingestion_requests_total", "Total number of ingestion requests")
-	IngestionErrors       = defaultRegistry.Counter("flightedge_ingestion_errors_total", "Total number of ingestion errors")
-	IngestionFlights      = defaultRegistry.Counter("flightedge_ingestion_flights_total", "Total flights ingested")
-	IngestionLatency      = defaultRegistry.Histogram("flightedge_ingestion_latency_seconds", "Ingestion request latency", []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10})
+	IngestionRequests = defaultRegistry.Counter("flightedge_ingestion_requests_total", "Total number of ingestion requests")
+	IngestionErrors   = defaultRegistry.Counter("flightedge_ingestion_errors_total", "Total number of ingestion errors")
+	IngestionFlights  = defaultRegistry.Counter("flightedge_ingestion_flights_total", "Total flights ingested")
+	IngestionLatency  = defaultRegistry.Histogram("flightedge_ingestion_latency_seconds", "Ingestion request latency", []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10})
 
 	// Ontology metrics
-	OntologyNodes         = defaultRegistry.Gauge("flightedge_ontology_nodes", "Number of nodes in ontology")
-	OntologyEdges         = defaultRegistry.Gauge("flightedge_ontology_edges", "Number of edges in ontology")
-	OntologyFlights       = defaultRegistry.Gauge("flightedge_ontology_flights", "Number of flight nodes")
-	OntologyAirports      = defaultRegistry.Gauge("flightedge_ontology_airports", "Number of airport nodes")
+	OntologyNodes    = defaultRegistry.Gauge("flightedge_ontology_nodes", "Number of nodes in ontology")
+	OntologyEdges    = defaultRegistry.Gauge("flightedge_ontology_edges", "Number of edges in ontology")
+	OntologyFlights  = defaultRegistry.Gauge("flightedge_ontology_flights", "Number of flight nodes")
+	OntologyAirports = defaultRegistry.Gauge("flightedge_ontology_airports", "Number of airport nodes")
 
 	// Query metrics
-	QueryRequests         = defaultRegistry.Counter("flightedge_query_requests_total", "Total number of query requests")
-	QueryErrors           = defaultRegistry.Counter("flightedge_query_errors_total", "Total number of query errors")
-	QueryLatency          = defaultRegistry.Histogram("flightedge_query_latency_seconds", "Query latency", []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25})
+	QueryRequests = defaultRegistry.Counter("flightedge_query_requests_total", "Total number of query requests")
+	QueryErrors   = defaultRegistry.Counter("flightedge_query_errors_total", "Total number of query errors")
+	QueryLatency  = defaultRegistry.Histogram("flightedge_query_latency_seconds", "Query latency", []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25})
 
 	// HTTP metrics
-	HTTPRequests          = defaultRegistry.Counter("flightedge_http_requests_total", "Total HTTP requests")
-	HTTPLatency           = defaultRegistry.Histogram("flightedge_http_latency_seconds", "HTTP request latency", []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1})
+	HTTPRequests = defaultRegistry.Counter("flightedge_http_requests_total", "Total HTTP requests")
+	HTTPLatency  = defaultRegistry.Histogram("flightedge_http_latency_seconds", "HTTP request latency", []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1})
+
+	// gRPC ingestion metrics
+	GRPCIngestBatches  = defaultRegistry.Counter("flightedge_grpc_ingest_batches_total", "Total gRPC ingestion batches acknowledged")
+	GRPCIngestFlights  = defaultRegistry.Counter("flightedge_grpc_ingest_flights_total", "Flights accepted through gRPC ingestion")
+	GRPCIngestRejected = defaultRegistry.Counter("flightedge_grpc_ingest_rejected_flights_total", "Flights rejected through gRPC ingestion")
+	GRPCIngestLatency  = defaultRegistry.Histogram("flightedge_grpc_ingest_latency_seconds", "gRPC ingestion batch latency", []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1})
 
 	// System metrics
-	ActiveConnections     = defaultRegistry.Gauge("flightedge_active_connections", "Number of active connections")
+	ActiveConnections = defaultRegistry.Gauge("flightedge_active_connections", "Number of active connections")
 )

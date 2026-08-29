@@ -47,12 +47,12 @@ func (s MemoryState) String() string {
 
 // MemoryStats holds current memory statistics.
 type MemoryStats struct {
-	AllocMB     float64
-	HeapMB      float64
-	SysMB       float64
-	NumGC       uint32
-	State       MemoryState
-	UsageRatio  float64 // 0.0 - 1.0 of soft limit
+	AllocMB    float64
+	HeapMB     float64
+	SysMB      float64
+	NumGC      uint32
+	State      MemoryState
+	UsageRatio float64 // 0.0 - 1.0 of soft limit
 }
 
 // MemoryMonitor tracks memory usage and triggers actions when thresholds are reached.
@@ -65,11 +65,11 @@ type MemoryMonitor struct {
 	listeners    []MemoryListener
 
 	// Atomic for fast path checks
-	isWarning   atomic.Bool
-	isCritical  atomic.Bool
+	isWarning  atomic.Bool
+	isCritical atomic.Bool
 
-	running     atomic.Bool
-	cancel      context.CancelFunc
+	running atomic.Bool
+	cancel  context.CancelFunc
 }
 
 // MemoryListener is called when memory state changes.
@@ -153,9 +153,10 @@ func (m *MemoryMonitor) ForceGC() {
 func (m *MemoryMonitor) monitorLoop(ctx context.Context) {
 	// Check interval based on memory mode
 	interval := 5 * time.Second
-	if m.config.MemoryMode == MemoryModeAggressive {
+	switch m.config.MemoryMode {
+	case MemoryModeAggressive:
 		interval = 2 * time.Second
-	} else if m.config.MemoryMode == MemoryModeReduced {
+	case MemoryModeReduced:
 		interval = 3 * time.Second
 	}
 
@@ -239,9 +240,9 @@ func (m *MemoryMonitor) checkMemory() {
 
 // PressureHandler handles memory pressure situations.
 type PressureHandler struct {
-	monitor  *MemoryMonitor
-	config   Config
-	onEvict  func(count int) // Called when data needs to be evicted
+	monitor *MemoryMonitor
+	config  Config
+	onEvict func(count int) // Called when data needs to be evicted
 }
 
 // NewPressureHandler creates a pressure handler.

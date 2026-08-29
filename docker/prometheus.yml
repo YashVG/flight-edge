@@ -10,12 +10,13 @@ global:
   external_labels:
     monitor: 'flightedge-monitor'
 
-# Alerting configuration (optional)
+# Alertmanager can be added later; Prometheus still evaluates and displays rules.
 alerting:
   alertmanagers: []
 
 # Rule files
-rule_files: []
+rule_files:
+  - /etc/prometheus/alerts.yml
 
 # Scrape configurations
 scrape_configs:

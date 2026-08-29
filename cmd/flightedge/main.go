@@ -6,22 +6,32 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	flightedgev1 "github.com/yash/flightedge/gen/flightedge/v1"
 	"github.com/yash/flightedge/internal/edge"
 	"github.com/yash/flightedge/internal/ingestion"
 	"github.com/yash/flightedge/internal/metrics"
 	"github.com/yash/flightedge/internal/ontology"
 	"github.com/yash/flightedge/internal/query"
+	ingestrpc "github.com/yash/flightedge/internal/rpc/ingest"
 	"github.com/yash/flightedge/pkg/models"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
+
+// version is set at build time for artifact traceability.
+var version = "dev"
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -32,6 +42,8 @@ type Config struct {
 	// Server
 	HTTPAddr string
 	HTTPPort int
+	GRPCAddr string
+	GRPCPort int
 
 	// OpenSky API - OAuth2 (preferred)
 	OpenSkyClientID     string
@@ -59,9 +71,11 @@ func loadConfig() Config {
 	cfg := Config{
 		HTTPAddr:            getEnv("HTTP_ADDR", "0.0.0.0"),
 		HTTPPort:            getEnvInt("HTTP_PORT", 8080),
+		GRPCAddr:            getEnv("GRPC_ADDR", "0.0.0.0"),
+		GRPCPort:            getEnvInt("GRPC_PORT", 9091),
 		OpenSkyClientID:     getEnv("OPENSKY_CLIENT_ID", ""),
 		OpenSkyClientSecret: getEnv("OPENSKY_CLIENT_SECRET", ""),
-		OpenSkyUsername:      getEnv("OPENSKY_USERNAME", ""),
+		OpenSkyUsername:     getEnv("OPENSKY_USERNAME", ""),
 		OpenSkyPassword:     getEnv("OPENSKY_PASSWORD", ""),
 		CredentialsFile:     getEnv("CREDENTIALS_FILE", "credentials.json"),
 		PollInterval:        getEnvDuration("POLL_INTERVAL", 10*time.Second),
@@ -163,12 +177,14 @@ func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
 
 // App holds all application components.
 type App struct {
-	config    Config
-	ontology  *ontology.Engine
-	query     *query.Engine
-	ingestion *ingestion.Processor
-	client    *ingestion.Client
-	server    *http.Server
+	config     Config
+	ontology   *ontology.Engine
+	query      *query.Engine
+	ingestion  *ingestion.Processor
+	client     *ingestion.Client
+	server     *http.Server
+	grpcServer *grpc.Server
+	grpcHealth *health.Server
 
 	// Cached airport positions for proximity matching
 	airports []airportPosition
@@ -179,7 +195,7 @@ type App struct {
 	nodeLimitEnforcer *edge.NodeLimitEnforcer
 
 	startTime time.Time
-	ready     bool
+	ready     atomic.Bool
 }
 
 // NewApp creates a new application instance.
@@ -322,12 +338,23 @@ func (a *App) findNearestAirport(lat, lon float64) (string, float64) {
 
 // handleFlightBatch processes a batch of flights from ingestion.
 func (a *App) handleFlightBatch(ctx context.Context, flights []models.Flight) error {
+	_, err := a.IngestFlights(ctx, flights)
+	return err
+}
+
+// IngestFlights updates the ontology from one accepted collector batch. It is
+// shared by the local OpenSky processor and the gRPC ingestion service so both
+// paths have identical indexing, retention, and metrics behavior.
+func (a *App) IngestFlights(ctx context.Context, flights []models.Flight) (ingestion.BatchOutcome, error) {
 	// Check if we're under memory pressure - reject if degradation says so
 	if a.memoryMonitor != nil {
 		state := a.memoryMonitor.State()
 		if state >= edge.MemoryStateCritical && a.config.Edge.DegradationAction == edge.DegradationRejectNew {
 			log.Printf("Rejecting batch of %d flights due to memory pressure", len(flights))
-			return nil // Silent rejection
+			return ingestion.BatchOutcome{
+				Rejected: len(flights),
+				Reason:   "memory pressure: new state batches are temporarily rejected",
+			}, nil
 		}
 	}
 
@@ -426,13 +453,13 @@ func (a *App) handleFlightBatch(ctx context.Context, flights []models.Flight) er
 		a.query.SetAirportCongestion(apt.code, congestionFactor)
 	}
 
-	return nil
+	return ingestion.BatchOutcome{Accepted: len(flights)}, nil
 }
 
 // Run starts the application.
 func (a *App) Run(ctx context.Context) error {
 	log.Println("FlightEdge starting...")
-	log.Printf("Configuration: addr=%s:%d poll=%s", a.config.HTTPAddr, a.config.HTTPPort, a.config.PollInterval)
+	log.Printf("Configuration: http=%s:%d grpc=%s:%d poll=%s", a.config.HTTPAddr, a.config.HTTPPort, a.config.GRPCAddr, a.config.GRPCPort, a.config.PollInterval)
 
 	// Start edge components (memory monitor, expiration)
 	if a.memoryMonitor != nil {
@@ -442,19 +469,31 @@ func (a *App) Run(ctx context.Context) error {
 		a.expirationManager.Start(ctx)
 	}
 
+	if err := a.startGRPCServer(); err != nil {
+		return err
+	}
+
 	// Start HTTP server
 	a.startHTTPServer()
 
-	// Initial data fetch
-	log.Println("Fetching initial flight data from OpenSky...")
-	if count, err := a.ingestion.ProcessOnce(ctx); err != nil {
-		log.Printf("Initial fetch failed: %v", err)
+	if a.config.EnableIngestion {
+		// Initial data fetch
+		log.Println("Fetching initial flight data from OpenSky...")
+		if count, err := a.ingestion.ProcessOnce(ctx); err != nil {
+			log.Printf("Initial fetch failed: %v", err)
+		} else {
+			log.Printf("Ingested %d flights", count)
+		}
 	} else {
-		log.Printf("Ingested %d flights", count)
+		log.Println("OpenSky ingestion disabled")
 	}
 
 	// Mark as ready
-	a.ready = true
+	a.ready.Store(true)
+	if a.grpcHealth != nil {
+		a.grpcHealth.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+		a.grpcHealth.SetServingStatus(flightedgev1.FlightIngestService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
+	}
 	log.Printf("FlightEdge ready. Ontology has %d nodes, %d edges",
 		a.ontology.Size(), a.ontology.EdgeCount())
 
@@ -497,6 +536,24 @@ func (a *App) Shutdown() error {
 		}
 	}
 
+	if a.grpcHealth != nil {
+		a.grpcHealth.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+		a.grpcHealth.SetServingStatus(flightedgev1.FlightIngestService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+	}
+	if a.grpcServer != nil {
+		done := make(chan struct{})
+		go func() {
+			a.grpcServer.GracefulStop()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			log.Println("gRPC graceful shutdown timed out; forcing stop")
+			a.grpcServer.Stop()
+		}
+	}
+
 	log.Println("FlightEdge stopped")
 	return nil
 }
@@ -504,6 +561,32 @@ func (a *App) Shutdown() error {
 // ---------------------------------------------------------------------------
 // HTTP Server
 // ---------------------------------------------------------------------------
+
+// startGRPCServer starts the edge-to-core ingestion transport. HTTP remains
+// the dashboard/query surface; gRPC is used only for collector batches.
+func (a *App) startGRPCServer() error {
+	addr := fmt.Sprintf("%s:%d", a.config.GRPCAddr, a.config.GRPCPort)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen for gRPC on %s: %w", addr, err)
+	}
+
+	a.grpcHealth = health.NewServer()
+	a.grpcHealth.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	a.grpcHealth.SetServingStatus(flightedgev1.FlightIngestService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+
+	a.grpcServer = grpc.NewServer()
+	healthpb.RegisterHealthServer(a.grpcServer, a.grpcHealth)
+	ingestrpc.NewServer(a.IngestFlights, func() bool { return a.ready.Load() }).Register(a.grpcServer)
+
+	go func() {
+		log.Printf("gRPC ingestion server listening on %s", addr)
+		if err := a.grpcServer.Serve(listener); err != nil {
+			log.Printf("gRPC server stopped: %v", err)
+		}
+	}()
+	return nil
+}
 
 func (a *App) startHTTPServer() {
 	mux := http.NewServeMux()
@@ -570,30 +653,38 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":    "healthy",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 		"uptime":    time.Since(a.startTime).String(),
-		"version":   "1.0.0",
+		"version":   version,
 	}
 
-	if !a.ready {
+	if !a.ready.Load() {
 		health["status"] = "starting"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 
-	json.NewEncoder(w).Encode(health)
+	if err := json.NewEncoder(w).Encode(health); err != nil {
+		log.Printf("encode health response: %v", err)
+	}
 }
 
 func (a *App) handleReady(w http.ResponseWriter, r *http.Request) {
-	if a.ready {
+	if a.ready.Load() {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ready"))
+		if _, err := w.Write([]byte("ready")); err != nil {
+			log.Printf("write readiness response: %v", err)
+		}
 	} else {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("not ready"))
+		if _, err := w.Write([]byte("not ready")); err != nil {
+			log.Printf("write readiness response: %v", err)
+		}
 	}
 }
 
 func (a *App) handleLive(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("alive"))
+	if _, err := w.Write([]byte("alive")); err != nil {
+		log.Printf("write liveness response: %v", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -608,7 +699,9 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	metrics.OntologyAirports.Set(float64(a.ontology.TypeCount(ontology.TypeAirport)))
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	w.Write([]byte(metrics.Default().Export()))
+	if _, err := w.Write([]byte(metrics.Default().Export())); err != nil {
+		log.Printf("write metrics response: %v", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -795,13 +888,13 @@ func (a *App) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	stats := map[string]interface{}{
 		"ontology": map[string]interface{}{
-			"total_nodes":    a.ontology.Size(),
-			"total_edges":    a.ontology.EdgeCount(),
-			"flights":        a.ontology.TypeCount(ontology.TypeFlight),
-			"airports":       a.ontology.TypeCount(ontology.TypeAirport),
-			"aircraft":       a.ontology.TypeCount(ontology.TypeAircraft),
-			"airlines":       a.ontology.TypeCount(ontology.TypeAirline),
-			"weather":        a.ontology.TypeCount(ontology.TypeWeather),
+			"total_nodes": a.ontology.Size(),
+			"total_edges": a.ontology.EdgeCount(),
+			"flights":     a.ontology.TypeCount(ontology.TypeFlight),
+			"airports":    a.ontology.TypeCount(ontology.TypeAirport),
+			"aircraft":    a.ontology.TypeCount(ontology.TypeAircraft),
+			"airlines":    a.ontology.TypeCount(ontology.TypeAirline),
+			"weather":     a.ontology.TypeCount(ontology.TypeWeather),
 		},
 		"ingestion": map[string]interface{}{
 			"total_requests":   ingestionMetrics.TotalRequests,
@@ -826,13 +919,13 @@ func (a *App) handleStats(w http.ResponseWriter, r *http.Request) {
 			"uptime":     time.Since(a.startTime).String(),
 		},
 		"edge": map[string]interface{}{
-			"memory_mode":       a.config.Edge.MemoryMode.String(),
-			"memory_limit_mb":   a.config.Edge.MemoryLimitMB,
-			"gc_percent":        a.config.Edge.GCPercent,
-			"retention_hours":   a.config.Edge.DataRetentionHours,
-			"max_nodes":         a.config.Edge.MaxNodes,
-			"compression":       a.config.Edge.EnableCompression,
-			"degradation":       a.config.Edge.EnableDegradation,
+			"memory_mode":     a.config.Edge.MemoryMode.String(),
+			"memory_limit_mb": a.config.Edge.MemoryLimitMB,
+			"gc_percent":      a.config.Edge.GCPercent,
+			"retention_hours": a.config.Edge.DataRetentionHours,
+			"max_nodes":       a.config.Edge.MaxNodes,
+			"compression":     a.config.Edge.EnableCompression,
+			"degradation":     a.config.Edge.EnableDegradation,
 		},
 	}
 
@@ -857,7 +950,9 @@ func (a *App) handleStats(w http.ResponseWriter, r *http.Request) {
 
 func respondJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Printf("encode JSON response: %v", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	appmetrics "github.com/yash/flightedge/internal/metrics"
 	"github.com/yash/flightedge/pkg/models"
 )
 
@@ -37,10 +38,10 @@ const (
 	tlsHandshakeTimeout = 10 * time.Second
 
 	// Retry settings
-	maxRetries     = 5
-	baseBackoff    = 1 * time.Second
-	maxBackoff     = 60 * time.Second
-	backoffFactor  = 2.0
+	maxRetries    = 5
+	baseBackoff   = 1 * time.Second
+	maxBackoff    = 60 * time.Second
+	backoffFactor = 2.0
 )
 
 // ---------------------------------------------------------------------------
@@ -49,20 +50,20 @@ const (
 
 // Metrics collects ingestion performance data.
 type Metrics struct {
-	TotalRequests    atomic.Int64
-	SuccessRequests  atomic.Int64
-	FailedRequests   atomic.Int64
-	TotalFlights     atomic.Int64
-	FilteredFlights  atomic.Int64
-	LastLatencyNs    atomic.Int64
-	AvgLatencyNs     atomic.Int64
-	EventsPerSecond  atomic.Int64
+	TotalRequests   atomic.Int64
+	SuccessRequests atomic.Int64
+	FailedRequests  atomic.Int64
+	TotalFlights    atomic.Int64
+	FilteredFlights atomic.Int64
+	LastLatencyNs   atomic.Int64
+	AvgLatencyNs    atomic.Int64
+	EventsPerSecond atomic.Int64
 
-	mu              sync.Mutex
-	latencySum      int64
-	latencyCount    int64
-	lastEventCount  int64
-	lastEventTime   time.Time
+	mu             sync.Mutex
+	latencySum     int64
+	latencyCount   int64
+	lastEventCount int64
+	lastEventTime  time.Time
 }
 
 // RecordLatency updates latency metrics.
@@ -303,7 +304,9 @@ func (tm *TokenManager) refresh(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("requesting token: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -459,7 +462,9 @@ func (c *Client) FetchAllStates(ctx context.Context) ([]models.Flight, error) {
 	if err != nil {
 		return nil, fmt.Errorf("executing request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
@@ -568,6 +573,15 @@ func boolVal(v interface{}) bool {
 // BatchHandler processes a batch of filtered flights.
 type BatchHandler func(ctx context.Context, flights []models.Flight) error
 
+// BatchOutcome describes what a FlightEdge core did with a batch. It is used
+// by transports that need an explicit acknowledgement instead of an error-only
+// callback.
+type BatchOutcome struct {
+	Accepted int
+	Rejected int
+	Reason   string
+}
+
 // ProcessorConfig configures the batch processor.
 type ProcessorConfig struct {
 	PollInterval time.Duration
@@ -669,13 +683,16 @@ func (p *Processor) run(ctx context.Context) {
 		// Fetch with timing
 		start := time.Now()
 		p.metrics.TotalRequests.Add(1)
+		appmetrics.IngestionRequests.Inc()
 
 		flights, err := p.client.FetchStatesWithRetry(ctx)
 		latency := time.Since(start)
 		p.metrics.RecordLatency(latency)
+		appmetrics.IngestionLatency.Observe(latency.Seconds())
 
 		if err != nil {
 			p.metrics.FailedRequests.Add(1)
+			appmetrics.IngestionErrors.Inc()
 			continue
 		}
 		p.metrics.SuccessRequests.Add(1)
@@ -688,7 +705,10 @@ func (p *Processor) run(ctx context.Context) {
 		}
 
 		// Process in batches for throughput
-		p.processBatches(ctx, filtered)
+		if err := p.processBatches(ctx, filtered); err != nil {
+			p.metrics.FailedRequests.Add(1)
+			appmetrics.IngestionErrors.Inc()
+		}
 	}
 }
 
@@ -704,7 +724,9 @@ func (p *Processor) filterFlights(flights []models.Flight) []models.Flight {
 }
 
 // processBatches splits filtered flights into batches and processes in parallel.
-func (p *Processor) processBatches(ctx context.Context, flights []models.Flight) {
+// It returns a handler failure so remote transports can make delivery failures
+// visible to callers instead of silently dropping a batch.
+func (p *Processor) processBatches(ctx context.Context, flights []models.Flight) error {
 	p.metrics.RecordEvents(int64(len(flights)))
 
 	// Split into batches
@@ -730,11 +752,12 @@ func (p *Processor) processBatches(ctx context.Context, flights []models.Flight)
 
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
+	errs := make(chan error, len(batches))
 
 	for _, batch := range batches {
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		case sem <- struct{}{}:
 		}
 
@@ -744,24 +767,35 @@ func (p *Processor) processBatches(ctx context.Context, flights []models.Flight)
 			defer func() { <-sem }()
 
 			if p.handler != nil {
-				_ = p.handler(ctx, b)
+				if err := p.handler(ctx, b); err != nil {
+					errs <- err
+				}
 			}
 		}(batch)
 	}
 
 	wg.Wait()
+	close(errs)
+	for err := range errs {
+		return err
+	}
+	return nil
 }
 
 // ProcessOnce fetches and processes a single batch (useful for testing).
 func (p *Processor) ProcessOnce(ctx context.Context) (int, error) {
 	start := time.Now()
 	p.metrics.TotalRequests.Add(1)
+	appmetrics.IngestionRequests.Inc()
 
 	flights, err := p.client.FetchStatesWithRetry(ctx)
-	p.metrics.RecordLatency(time.Since(start))
+	latency := time.Since(start)
+	p.metrics.RecordLatency(latency)
+	appmetrics.IngestionLatency.Observe(latency.Seconds())
 
 	if err != nil {
 		p.metrics.FailedRequests.Add(1)
+		appmetrics.IngestionErrors.Inc()
 		return 0, err
 	}
 	p.metrics.SuccessRequests.Add(1)
@@ -772,7 +806,11 @@ func (p *Processor) ProcessOnce(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	p.processBatches(ctx, filtered)
+	if err := p.processBatches(ctx, filtered); err != nil {
+		p.metrics.FailedRequests.Add(1)
+		appmetrics.IngestionErrors.Inc()
+		return 0, err
+	}
 	return len(filtered), nil
 }
 

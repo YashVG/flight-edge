@@ -1,6 +1,6 @@
 # FlightEdge Edge Deployment Guide
 
-This document describes the edge deployment optimizations for FlightEdge, designed to run within strict resource constraints (<512MB memory, <50ms query latency).
+This document describes FlightEdge's edge deployment controls and the validation needed before using them on constrained hardware. The repository includes a 512MB memory gate and a scoped query-latency gate; these are test scenarios, not guarantees for every workload or device.
 
 ## Overview
 
@@ -10,8 +10,8 @@ The `internal/edge` package provides a comprehensive set of tools for deploying 
 - **Memory Monitoring**: Real-time tracking with pressure alerts
 - **Data Expiration**: Automatic cleanup of old data based on retention policies
 - **Node Limits**: Hard caps on graph size with oldest-first eviction
-- **Compression**: Optional compression for historical data
-- **Startup Optimization**: Fast startup targeting <5s cold start
+- **Compression utilities**: Tested property/byte compression helpers; not wired into the live graph path yet
+- **Startup utilities**: Phase tracking and lazy-index helpers; not wired into application startup yet
 
 ## Configuration
 
@@ -88,10 +88,10 @@ ENABLE_DEGRADATION=true
 
 | Pros | Cons |
 |------|------|
-| + ~40% size reduction | - CPU overhead |
+| + Can reduce repetitive payload size | - CPU overhead |
 | + More data in memory | - Slightly higher query latency |
 
-**Recommendation**: Enable only when memory is primary constraint and queries are infrequent.
+**Current boundary**: `ENABLE_COMPRESSION` is parsed by the configuration package, but the live ontology does not invoke compression. Treat it as roadmap configuration until that integration has its own end-to-end tests.
 
 ### Lazy Indexing
 
@@ -100,7 +100,7 @@ ENABLE_DEGRADATION=true
 | + Faster cold start (<5s) | - First queries slower |
 | + Lower startup memory | - Temporary latency spike |
 
-**Recommendation**: Enable for fast startup, disable for consistent query performance.
+**Current boundary**: `LAZY_INDEXING` is parsed and the helper is unit-tested, but application startup does not currently use it.
 
 ### Graceful Degradation
 
@@ -121,7 +121,7 @@ When memory pressure exceeds the soft limit:
 
 ## Startup Optimization
 
-Target: <5s cold start
+The startup package can measure a target of <5s cold start. Validate the packaged application on the target hardware before adopting that target as an SLO.
 
 The startup optimizer runs phases in parallel where possible:
 
@@ -203,10 +203,12 @@ services:
 
 Prometheus metrics are exposed at `/metrics`:
 
-- `flightedge_memory_heap_bytes`: Current heap allocation
-- `flightedge_memory_state`: Current memory state (0=normal, 3=emergency)
-- `flightedge_expired_nodes_total`: Total nodes expired
+- `go_memstats_heap_alloc_bytes`: Current heap allocation
+- `flightedge_ontology_nodes`: Current ontology node count
+- `flightedge_ingestion_errors_total`: OpenSky ingestion failures
 - `flightedge_query_latency_seconds`: Query latency histogram
+
+The Compose stack provisions Prometheus rules from `docker/alerts.yml` and a Grafana dashboard covering query latency/throughput, ontology size, ingestion, memory, and goroutines. The richer edge-state fields are currently available from `/api/v1/stats`, not as Prometheus series.
 
 ## Best Practices
 

@@ -8,6 +8,8 @@
 # ------------------------------------------------------------------------------
 FROM golang:1.22-alpine AS builder
 
+ARG VERSION=dev
+
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
 
@@ -29,13 +31,10 @@ COPY . .
 # -ldflags: strip debug info, reduce binary size
 # -trimpath: remove file system paths from binary
 RUN go build \
-    -ldflags="-s -w -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo 'dev')" \
+    -ldflags="-s -w -X main.version=${VERSION}" \
     -trimpath \
     -o /bin/flightedge \
     ./cmd/flightedge/
-
-# Verify binary
-RUN /bin/flightedge --help 2>/dev/null || true
 
 # ------------------------------------------------------------------------------
 # Stage 2: Runtime (minimal)
@@ -66,6 +65,9 @@ RUN mkdir -p /app/config /app/data && \
 # Copy binary from builder
 COPY --from=builder /bin/flightedge /usr/local/bin/flightedge
 
+# Copy the dashboard served by the application.
+COPY --from=builder --chown=flightedge:flightedge /src/web /app/web
+
 # Copy timezone data
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
@@ -78,6 +80,8 @@ USER flightedge
 # Environment variables with defaults
 ENV HTTP_ADDR=0.0.0.0 \
     HTTP_PORT=8080 \
+    GRPC_ADDR=0.0.0.0 \
+    GRPC_PORT=9091 \
     ENABLE_INGESTION=true \
     POLL_INTERVAL=10s \
     GOMAXPROCS=1 \
@@ -85,7 +89,7 @@ ENV HTTP_ADDR=0.0.0.0 \
     GOMEMLIMIT=450MiB
 
 # Expose port
-EXPOSE 8080
+EXPOSE 8080 9091
 
 # Health check
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \

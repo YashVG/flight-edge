@@ -52,15 +52,14 @@ type StartupOptimizer struct {
 	config    Config
 	startTime time.Time
 
-	mu           sync.RWMutex
-	phase        StartupPhase
-	phaseTimes   map[StartupPhase]time.Duration
-	errors       []error
-	
-	tasks        []StartupTask
-	taskResults  chan taskResult
+	mu         sync.RWMutex
+	phase      StartupPhase
+	phaseTimes map[StartupPhase]time.Duration
 
-	ready        atomic.Bool
+	tasks       []StartupTask
+	taskResults chan taskResult
+
+	ready atomic.Bool
 }
 
 // StartupTask represents a startup task.
@@ -100,15 +99,15 @@ func (s *StartupOptimizer) AddTask(task StartupTask) {
 func (s *StartupOptimizer) SetPhase(phase StartupPhase) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	now := time.Now()
 	if s.phase > PhaseInit {
 		s.phaseTimes[s.phase] = now.Sub(s.startTime) - s.totalPreviousTime()
 	}
-	
+
 	s.phase = phase
 	log.Printf("Startup phase: %s (elapsed: %v)", phase, now.Sub(s.startTime))
-	
+
 	if phase == PhaseReady {
 		s.ready.Store(true)
 	}
@@ -128,53 +127,53 @@ func (s *StartupOptimizer) Run(ctx context.Context) error {
 	if s.config.MemoryMode == MemoryModeAggressive {
 		deadline = 3 * time.Second
 	}
-	
+
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
 	s.SetPhase(PhaseLoadConfig)
-	
+
 	// Apply runtime configuration immediately
 	s.config.Apply()
-	
+
 	s.SetPhase(PhaseInitMemory)
-	
+
 	// Pre-allocate memory in background if not in aggressive mode
 	if s.config.MemoryMode != MemoryModeAggressive {
 		runtime.GC() // Clean slate
 	}
-	
+
 	// Sort tasks by priority and phase
 	s.sortTasks()
-	
+
 	// Execute sync tasks by phase
 	for phase := PhaseSeedData; phase <= PhaseStartServices; phase++ {
 		s.SetPhase(phase)
-		
+
 		if err := s.runPhaseTasks(ctx, phase, false); err != nil {
 			return err
 		}
 	}
-	
+
 	// Start async tasks in background
 	go s.runAsyncTasks(context.Background())
-	
+
 	s.SetPhase(PhaseReady)
-	
+
 	totalTime := time.Since(s.startTime)
 	log.Printf("Startup complete in %v", totalTime)
-	
+
 	if totalTime > deadline {
 		log.Printf("WARNING: Startup exceeded target of %v", deadline)
 	}
-	
+
 	return nil
 }
 
 func (s *StartupOptimizer) sortTasks() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	// Simple bubble sort (small list)
 	for i := 0; i < len(s.tasks)-1; i++ {
 		for j := 0; j < len(s.tasks)-i-1; j++ {
@@ -195,26 +194,26 @@ func (s *StartupOptimizer) runPhaseTasks(ctx context.Context, phase StartupPhase
 		}
 	}
 	s.mu.RUnlock()
-	
+
 	if len(phaseTasks) == 0 {
 		return nil
 	}
-	
+
 	// Run tasks concurrently within phase (if multiple same-priority tasks)
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(phaseTasks))
-	
+
 	for _, task := range phaseTasks {
 		wg.Add(1)
 		go func(t StartupTask) {
 			defer wg.Done()
-			
+
 			start := time.Now()
 			err := t.Fn(ctx)
 			elapsed := time.Since(start)
-			
+
 			s.taskResults <- taskResult{Task: t, Error: err, Time: elapsed}
-			
+
 			if err != nil {
 				if !t.Optional {
 					errChan <- err
@@ -224,14 +223,14 @@ func (s *StartupOptimizer) runPhaseTasks(ctx context.Context, phase StartupPhase
 			}
 		}(task)
 	}
-	
+
 	wg.Wait()
 	close(errChan)
-	
+
 	for err := range errChan {
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -244,12 +243,12 @@ func (s *StartupOptimizer) runAsyncTasks(ctx context.Context) {
 		}
 	}
 	s.mu.RUnlock()
-	
+
 	for _, task := range asyncTasks {
 		start := time.Now()
 		err := task.Fn(ctx)
 		elapsed := time.Since(start)
-		
+
 		if err != nil {
 			log.Printf("Async task %s failed: %v", task.Name, err)
 		} else {
@@ -279,17 +278,17 @@ func (s *StartupOptimizer) Phase() StartupPhase {
 func (s *StartupOptimizer) Stats() StartupStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	phaseTimes := make(map[StartupPhase]time.Duration)
 	for k, v := range s.phaseTimes {
 		phaseTimes[k] = v
 	}
-	
+
 	return StartupStats{
-		TotalTime:   time.Since(s.startTime),
-		PhaseTimes:  phaseTimes,
-		Ready:       s.ready.Load(),
-		TaskCount:   len(s.tasks),
+		TotalTime:  time.Since(s.startTime),
+		PhaseTimes: phaseTimes,
+		Ready:      s.ready.Load(),
+		TaskCount:  len(s.tasks),
 	}
 }
 
@@ -330,14 +329,14 @@ func (l *LazyIndex) BuildAsync(buildFn func() map[string][]uint32) {
 	if l.building.Swap(true) {
 		return // Already building
 	}
-	
+
 	go func() {
 		data := buildFn()
-		
+
 		l.mu.Lock()
 		l.data = data
 		l.mu.Unlock()
-		
+
 		l.built.Store(true)
 		l.building.Store(false)
 	}()
@@ -349,7 +348,7 @@ func (l *LazyIndex) Get(key string) []uint32 {
 	for l.building.Load() && !l.built.Load() {
 		runtime.Gosched()
 	}
-	
+
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return l.data[key]

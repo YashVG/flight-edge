@@ -1,0 +1,12 @@
+.git
+.github
+.DS_Store
+.env
+credentials.json
+PROJECT_REVIEW.md
+bin
+flightedge
+video.mov
+*.prof
+coverage.out
+coverage.html

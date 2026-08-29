@@ -1,0 +1,38 @@
+groups:
+  - name: flightedge
+    rules:
+      - alert: FlightEdgeDown
+        expr: up{job="flightedge"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: FlightEdge is unavailable
+          description: Prometheus has been unable to scrape FlightEdge for more than one minute.
+
+      - alert: FlightEdgeQueryP99High
+        expr: histogram_quantile(0.99, sum by (le) (rate(flightedge_query_latency_seconds_bucket[5m]))) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: FlightEdge query P99 exceeds 50 ms
+          description: Query P99 has exceeded the scoped latency target for five minutes.
+
+      - alert: FlightEdgeHeapHigh
+        expr: go_memstats_heap_alloc_bytes{job="flightedge"} > 471859200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: FlightEdge heap exceeds 450 MiB
+          description: Heap usage is close to the 512 MiB edge deployment limit.
+
+      - alert: FlightEdgeIngestionErrors
+        expr: increase(flightedge_ingestion_errors_total[10m]) > 3
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Repeated OpenSky ingestion failures
+          description: FlightEdge recorded more than three ingestion failures in ten minutes.
