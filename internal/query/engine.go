@@ -177,20 +177,18 @@ type CongestionSnapshot struct {
 	Airborne    int       `json:"airborne"`
 }
 
-// AirportCongestion holds the current congestion state and prediction for an airport.
+// AirportCongestion summarizes observed flight density near an airport.
 type AirportCongestion struct {
-	Code           string               `json:"code"`
-	Name           string               `json:"name"`
-	FlightCount    int                  `json:"flight_count"`
-	OnGround       int                  `json:"on_ground"`
-	Airborne       int                  `json:"airborne"`
-	Level          string               `json:"level"`           // "low", "moderate", "high", "critical"
-	Trend          string               `json:"trend"`           // "increasing", "stable", "decreasing"
-	PredictedLevel string               `json:"predicted_level"` // predicted level in 10 min
-	PredictedCount int                  `json:"predicted_count"`
-	AvgCount       float64              `json:"avg_count"`
-	PeakCount      int                  `json:"peak_count"`
-	History        []CongestionSnapshot `json:"history"`
+	Code        string               `json:"code"`
+	Name        string               `json:"name"`
+	FlightCount int                  `json:"flight_count"`
+	OnGround    int                  `json:"on_ground"`
+	Airborne    int                  `json:"airborne"`
+	Level       string               `json:"level"` // "low", "moderate", "high", "critical"
+	Trend       string               `json:"trend"` // "increasing", "stable", "decreasing"
+	AvgCount    float64              `json:"avg_count"`
+	PeakCount   int                  `json:"peak_count"`
+	History     []CongestionSnapshot `json:"history"`
 }
 
 // CongestionTracker maintains a sliding window of flight counts per airport.
@@ -248,11 +246,10 @@ func (ct *CongestionTracker) GetCongestion(code, name string) AirportCongestion 
 	history := ct.history[code]
 	if len(history) == 0 {
 		return AirportCongestion{
-			Code:           code,
-			Name:           name,
-			Level:          "low",
-			Trend:          "stable",
-			PredictedLevel: "low",
+			Code:  code,
+			Name:  name,
+			Level: "low",
+			Trend: "stable",
 		}
 	}
 
@@ -271,7 +268,6 @@ func (ct *CongestionTracker) GetCongestion(code, name string) AirportCongestion 
 
 	// Compute trend: compare recent 6 snapshots vs previous 6
 	trend := "stable"
-	ratePerMinute := 0.0
 	if len(history) >= 12 {
 		recentStart := len(history) - 6
 		prevStart := len(history) - 12
@@ -286,9 +282,6 @@ func (ct *CongestionTracker) GetCongestion(code, name string) AirportCongestion 
 		prevAvg := prevSum / 6.0
 		diff := recentAvg - prevAvg
 
-		// Compute rate per minute (6 snapshots ≈ 1 minute at 10s interval)
-		ratePerMinute = diff // diff per ~1 minute window
-
 		if diff > 2 {
 			trend = "increasing"
 		} else if diff < -2 {
@@ -299,10 +292,6 @@ func (ct *CongestionTracker) GetCongestion(code, name string) AirportCongestion 
 		recentAvg := float64(history[len(history)-1].FlightCount+history[len(history)-2].FlightCount) / 2.0
 		prevAvg := float64(history[0].FlightCount+history[1].FlightCount) / 2.0
 		diff := recentAvg - prevAvg
-		elapsed := history[len(history)-1].Timestamp.Sub(history[0].Timestamp).Minutes()
-		if elapsed > 0 {
-			ratePerMinute = diff / elapsed
-		}
 		if diff > 2 {
 			trend = "increasing"
 		} else if diff < -2 {
@@ -310,29 +299,21 @@ func (ct *CongestionTracker) GetCongestion(code, name string) AirportCongestion 
 		}
 	}
 
-	// Predict count in 10 minutes via linear extrapolation
-	predictedCount := latest.FlightCount + int(ratePerMinute*10)
-	if predictedCount < 0 {
-		predictedCount = 0
-	}
-
 	// Copy history for response
 	historyCopy := make([]CongestionSnapshot, len(history))
 	copy(historyCopy, history)
 
 	return AirportCongestion{
-		Code:           code,
-		Name:           name,
-		FlightCount:    latest.FlightCount,
-		OnGround:       latest.OnGround,
-		Airborne:       latest.Airborne,
-		Level:          congestionLevel(latest.FlightCount),
-		Trend:          trend,
-		PredictedLevel: congestionLevel(predictedCount),
-		PredictedCount: predictedCount,
-		AvgCount:       math.Round(avg*10) / 10,
-		PeakCount:      peak,
-		History:        historyCopy,
+		Code:        code,
+		Name:        name,
+		FlightCount: latest.FlightCount,
+		OnGround:    latest.OnGround,
+		Airborne:    latest.Airborne,
+		Level:       congestionLevel(latest.FlightCount),
+		Trend:       trend,
+		AvgCount:    math.Round(avg*10) / 10,
+		PeakCount:   peak,
+		History:     historyCopy,
 	}
 }
 

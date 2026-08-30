@@ -12,13 +12,16 @@ service FlightIngestService {
   rpc StreamFlightStates(stream StreamFlightStatesRequest) returns (stream StreamFlightStatesResponse);
 }
 
-// StreamFlightStatesRequest is an ordered batch emitted by one collector. source_id and
-// sequence let the core identify retries and reject out-of-order batches.
+// StreamFlightStatesRequest is an ordered batch emitted by one collector.
+// A session is generated when a collector starts. This keeps sequence numbers
+// monotonic within a delivery session without treating a collector restart as
+// a replay of old batches.
 message StreamFlightStatesRequest {
   string source_id = 1;
   uint64 sequence = 2;
   google.protobuf.Timestamp observed_at = 3;
   repeated FlightState flights = 4;
+  string session_id = 5;
 }
 
 // FlightState mirrors the state-vector fields FlightEdge currently needs to
@@ -36,10 +39,27 @@ message FlightState {
   google.protobuf.Timestamp last_contact = 10;
 }
 
-// StreamFlightStatesResponse is sent only after the core has accepted or rejected a batch.
+// BatchDisposition tells a collector whether it may retry a batch. It is an
+// enum rather than a parsed error string so retry policy remains compatible as
+// the service evolves.
+enum BatchDisposition {
+  BATCH_DISPOSITION_UNSPECIFIED = 0;
+  BATCH_DISPOSITION_ACCEPTED = 1;
+  BATCH_DISPOSITION_DUPLICATE = 2;
+  BATCH_DISPOSITION_INVALID = 3;
+  BATCH_DISPOSITION_OUT_OF_ORDER = 4;
+  BATCH_DISPOSITION_IN_FLIGHT = 5;
+  BATCH_DISPOSITION_OVERLOADED = 6;
+}
+
+// StreamFlightStatesResponse is sent after the core has accepted, rejected,
+// or deliberately shed a batch. retry_after_ms is advisory and applies only
+// to retryable dispositions such as IN_FLIGHT and OVERLOADED.
 message StreamFlightStatesResponse {
   uint64 sequence = 1;
   uint32 accepted = 2;
   uint32 rejected = 3;
   string reason = 4;
+  BatchDisposition disposition = 5;
+  uint32 retry_after_ms = 6;
 }

@@ -36,3 +36,21 @@ groups:
         annotations:
           summary: Repeated OpenSky ingestion failures
           description: FlightEdge recorded more than three ingestion failures in ten minutes.
+
+      - alert: FlightEdgeCollectorDrops
+        expr: increase(flightedge_collector_batches_dropped_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Collector delivery queue dropped batches
+          description: A collector exceeded its bounded queue or exhausted delivery retries.
+
+      - alert: FlightEdgeIngressOverloaded
+        expr: increase(flightedge_grpc_ingest_overloaded_batches_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Core is shedding gRPC ingestion batches
+          description: The gRPC admission limit was reached; increase core capacity or reduce collector load.

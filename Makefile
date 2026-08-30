@@ -4,7 +4,7 @@ DOCKER_IMAGE := flightedge:latest
 DOCKER_COMPOSE := docker/docker-compose.yml
 GOLANGCI_LINT_VERSION := v2.12.2
 
-.PHONY: build build-collector proto test bench docker clean lint lint-install run run-core run-collector dev help
+.PHONY: build build-collector proto test bench docker clean lint lint-install run run-core run-collector dev help docker-build docker-build-collector
 
 # Default target
 .DEFAULT_GOAL := help
@@ -113,6 +113,9 @@ fmt: ## Format code
 ## Docker
 docker-build: ## Build Docker image
 	docker build -f docker/Dockerfile -t $(DOCKER_IMAGE) .
+
+docker-build-collector: ## Build the edge collector Docker image
+	docker build --target collector -f docker/Dockerfile -t $(APP_NAME)-collector:latest .
 
 docker-build-debug: ## Build Docker debug image
 	docker build -f docker/Dockerfile --target debug -t $(DOCKER_IMAGE)-debug .

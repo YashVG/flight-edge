@@ -17,6 +17,36 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// MaxFlightsPerBatch limits memory and CPU committed to one collector message.
+// Collectors may use smaller batches, but the core never accepts an unbounded one.
+const MaxFlightsPerBatch = 1000
+
+const defaultMaxInFlightBatches = 32
+
+// ServerOption configures admission behaviour at the edge-to-core boundary.
+type ServerOption func(*Server)
+
+// WithMaxInFlightBatches bounds concurrent calls into the core. Each delivery
+// session is already restricted to one in-flight sequence; this global bound
+// prevents a large collector fleet from exhausting the core during a burst.
+func WithMaxInFlightBatches(max int) ServerOption {
+	return func(s *Server) {
+		if max > 0 {
+			s.admission = make(chan struct{}, max)
+		}
+	}
+}
+
+// WithRetryAfter sets the advisory delay returned when the core deliberately
+// sheds a batch. The client still applies jitter to avoid synchronized retries.
+func WithRetryAfter(delay time.Duration) ServerOption {
+	return func(s *Server) {
+		if delay > 0 {
+			s.retryAfter = delay
+		}
+	}
+}
+
 // FlightIngestor is the core operation shared by local polling and gRPC
 // collectors. It reports accepted/rejected counts so collectors can decide
 // whether a batch should be retried.
@@ -32,16 +62,31 @@ type Server struct {
 	ready  func() bool
 
 	mu           sync.Mutex
-	lastSequence map[string]uint64
+	lastSequence map[streamKey]uint64
+	inFlight     map[streamKey]uint64
+	admission    chan struct{}
+	retryAfter   time.Duration
+}
+
+type streamKey struct {
+	sourceID  string
+	sessionID string
 }
 
 // NewServer creates the FlightEdge ingestion RPC service.
-func NewServer(ingest FlightIngestor, ready func() bool) *Server {
-	return &Server{
+func NewServer(ingest FlightIngestor, ready func() bool, options ...ServerOption) *Server {
+	s := &Server{
 		ingest:       ingest,
 		ready:        ready,
-		lastSequence: make(map[string]uint64),
+		lastSequence: make(map[streamKey]uint64),
+		inFlight:     make(map[streamKey]uint64),
+		admission:    make(chan struct{}, defaultMaxInFlightBatches),
+		retryAfter:   250 * time.Millisecond,
 	}
+	for _, option := range options {
+		option(s)
+	}
+	return s
 }
 
 // Register adds the service to a gRPC server.
@@ -50,8 +95,8 @@ func (s *Server) Register(registrar grpc.ServiceRegistrar) {
 }
 
 // StreamFlightStates accepts one ordered sequence from a collector. A response
-// is sent for every valid request so the collector has a durable protocol-level
-// acknowledgement before it discards its local batch.
+// is sent for every valid request so the collector has an explicit
+// protocol-level acknowledgement before it discards its local batch.
 func (s *Server) StreamFlightStates(stream grpc.BidiStreamingServer[flightedgev1.StreamFlightStatesRequest, flightedgev1.StreamFlightStatesResponse]) error {
 	for {
 		req, err := stream.Recv()
@@ -67,6 +112,7 @@ func (s *Server) StreamFlightStates(stream grpc.BidiStreamingServer[flightedgev1
 		if err := s.validateRequest(req); err != nil {
 			ack.Rejected = uint32(len(req.GetFlights()))
 			ack.Reason = err.Error()
+			ack.Disposition = flightedgev1.BatchDisposition_BATCH_DISPOSITION_INVALID
 			metrics.GRPCIngestRejected.Add(int64(ack.Rejected))
 			if sendErr := stream.Send(ack); sendErr != nil {
 				return sendErr
@@ -78,18 +124,25 @@ func (s *Server) StreamFlightStates(stream grpc.BidiStreamingServer[flightedgev1
 			return status.Error(codes.Unavailable, "flightedge core is not ready")
 		}
 
-		if s.isDuplicateOrOutOfOrder(req.GetSourceId(), req.GetSequence()) {
-			ack.Reason = "duplicate or out-of-order sequence already acknowledged"
+		key := streamKey{sourceID: req.GetSourceId(), sessionID: req.GetSessionId()}
+		decision := s.reserveSequence(key, req.GetSequence())
+		if decision != sequenceReserved {
+			ack.Reason = decision.reason()
+			ack.Disposition = decision.disposition()
+			if decision.retryable() {
+				ack.RetryAfterMs = uint32(s.retryAfter.Milliseconds())
+			}
 			if err := stream.Send(ack); err != nil {
 				return err
 			}
 			continue
 		}
-
 		flights, err := flightsFromRequest(req)
 		if err != nil {
+			s.releaseSequence(key, req.GetSequence())
 			ack.Rejected = uint32(len(req.GetFlights()))
 			ack.Reason = err.Error()
+			ack.Disposition = flightedgev1.BatchDisposition_BATCH_DISPOSITION_INVALID
 			metrics.GRPCIngestRejected.Add(int64(ack.Rejected))
 			if sendErr := stream.Send(ack); sendErr != nil {
 				return sendErr
@@ -97,8 +150,24 @@ func (s *Server) StreamFlightStates(stream grpc.BidiStreamingServer[flightedgev1
 			continue
 		}
 
+		if !s.acquireAdmission() {
+			s.releaseSequence(key, req.GetSequence())
+			ack.Disposition = flightedgev1.BatchDisposition_BATCH_DISPOSITION_OVERLOADED
+			ack.Reason = "core admission limit reached"
+			ack.RetryAfterMs = uint32(s.retryAfter.Milliseconds())
+			metrics.GRPCIngestOverloaded.Inc()
+			if err := stream.Send(ack); err != nil {
+				return err
+			}
+			continue
+		}
+
+		metrics.GRPCIngestActive.Inc()
 		outcome, err := s.ingest(stream.Context(), flights)
+		s.releaseAdmission()
+		metrics.GRPCIngestActive.Dec()
 		if err != nil {
+			s.releaseSequence(key, req.GetSequence())
 			return status.Errorf(codes.Unavailable, "ingesting batch %d: %v", req.GetSequence(), err)
 		}
 
@@ -106,7 +175,11 @@ func (s *Server) StreamFlightStates(stream grpc.BidiStreamingServer[flightedgev1
 		ack.Rejected = uint32(outcome.Rejected)
 		ack.Reason = outcome.Reason
 		if outcome.Rejected == 0 {
-			s.markAcknowledged(req.GetSourceId(), req.GetSequence())
+			s.markAcknowledged(key, req.GetSequence())
+			ack.Disposition = flightedgev1.BatchDisposition_BATCH_DISPOSITION_ACCEPTED
+		} else {
+			s.releaseSequence(key, req.GetSequence())
+			ack.Disposition = flightedgev1.BatchDisposition_BATCH_DISPOSITION_INVALID
 		}
 
 		metrics.GRPCIngestBatches.Inc()
@@ -124,11 +197,17 @@ func (s *Server) validateRequest(req *flightedgev1.StreamFlightStatesRequest) er
 	if req.GetSourceId() == "" {
 		return fmt.Errorf("source_id is required")
 	}
+	if req.GetSessionId() == "" {
+		return fmt.Errorf("session_id is required")
+	}
 	if req.GetSequence() == 0 {
 		return fmt.Errorf("sequence must start at 1")
 	}
 	if len(req.GetFlights()) == 0 {
 		return fmt.Errorf("at least one flight is required")
+	}
+	if len(req.GetFlights()) > MaxFlightsPerBatch {
+		return fmt.Errorf("batch exceeds maximum of %d flights", MaxFlightsPerBatch)
 	}
 	if observedAt := req.GetObservedAt(); observedAt != nil && !observedAt.IsValid() {
 		return fmt.Errorf("observed_at is invalid")
@@ -136,16 +215,94 @@ func (s *Server) validateRequest(req *flightedgev1.StreamFlightStatesRequest) er
 	return nil
 }
 
-func (s *Server) isDuplicateOrOutOfOrder(sourceID string, sequence uint64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return sequence <= s.lastSequence[sourceID]
+type sequenceDecision uint8
+
+const (
+	sequenceReserved sequenceDecision = iota
+	sequenceDuplicate
+	sequenceInFlight
+	sequenceOutOfOrder
+)
+
+func (d sequenceDecision) reason() string {
+	switch d {
+	case sequenceDuplicate:
+		return "duplicate sequence already acknowledged"
+	case sequenceInFlight:
+		return "sequence is already being ingested"
+	case sequenceOutOfOrder:
+		return "out-of-order sequence"
+	default:
+		return ""
+	}
 }
 
-func (s *Server) markAcknowledged(sourceID string, sequence uint64) {
+func (d sequenceDecision) disposition() flightedgev1.BatchDisposition {
+	switch d {
+	case sequenceDuplicate:
+		return flightedgev1.BatchDisposition_BATCH_DISPOSITION_DUPLICATE
+	case sequenceInFlight:
+		return flightedgev1.BatchDisposition_BATCH_DISPOSITION_IN_FLIGHT
+	case sequenceOutOfOrder:
+		return flightedgev1.BatchDisposition_BATCH_DISPOSITION_OUT_OF_ORDER
+	default:
+		return flightedgev1.BatchDisposition_BATCH_DISPOSITION_UNSPECIFIED
+	}
+}
+
+func (d sequenceDecision) retryable() bool {
+	return d == sequenceInFlight
+}
+
+// reserveSequence atomically grants one stream ownership of the next sequence
+// for a source. The reservation is released if ingestion fails.
+func (s *Server) reserveSequence(key streamKey, sequence uint64) sequenceDecision {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastSequence[sourceID] = sequence
+
+	last := s.lastSequence[key]
+	if sequence <= last {
+		return sequenceDuplicate
+	}
+	if pending, ok := s.inFlight[key]; ok {
+		if pending == sequence {
+			return sequenceInFlight
+		}
+		return sequenceOutOfOrder
+	}
+	if sequence != last+1 {
+		return sequenceOutOfOrder
+	}
+	s.inFlight[key] = sequence
+	return sequenceReserved
+}
+
+func (s *Server) markAcknowledged(key streamKey, sequence uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastSequence[key] = sequence
+	delete(s.inFlight, key)
+}
+
+func (s *Server) releaseSequence(key streamKey, sequence uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inFlight[key] == sequence {
+		delete(s.inFlight, key)
+	}
+}
+
+func (s *Server) acquireAdmission() bool {
+	select {
+	case s.admission <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) releaseAdmission() {
+	<-s.admission
 }
 
 func flightsFromRequest(req *flightedgev1.StreamFlightStatesRequest) ([]models.Flight, error) {

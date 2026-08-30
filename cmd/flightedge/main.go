@@ -40,10 +40,12 @@ var version = "dev"
 // Config holds application configuration.
 type Config struct {
 	// Server
-	HTTPAddr string
-	HTTPPort int
-	GRPCAddr string
-	GRPCPort int
+	HTTPAddr                 string
+	HTTPPort                 int
+	GRPCAddr                 string
+	GRPCPort                 int
+	GRPCMaxConcurrentStreams int
+	GRPCMaxInFlightBatches   int
 
 	// OpenSky API - OAuth2 (preferred)
 	OpenSkyClientID     string
@@ -69,18 +71,20 @@ func loadConfig() Config {
 	edgeCfg := edge.LoadFromEnv()
 
 	cfg := Config{
-		HTTPAddr:            getEnv("HTTP_ADDR", "0.0.0.0"),
-		HTTPPort:            getEnvInt("HTTP_PORT", 8080),
-		GRPCAddr:            getEnv("GRPC_ADDR", "0.0.0.0"),
-		GRPCPort:            getEnvInt("GRPC_PORT", 9091),
-		OpenSkyClientID:     getEnv("OPENSKY_CLIENT_ID", ""),
-		OpenSkyClientSecret: getEnv("OPENSKY_CLIENT_SECRET", ""),
-		OpenSkyUsername:     getEnv("OPENSKY_USERNAME", ""),
-		OpenSkyPassword:     getEnv("OPENSKY_PASSWORD", ""),
-		CredentialsFile:     getEnv("CREDENTIALS_FILE", "credentials.json"),
-		PollInterval:        getEnvDuration("POLL_INTERVAL", 10*time.Second),
-		EnableIngestion:     getEnvBool("ENABLE_INGESTION", true),
-		Edge:                edgeCfg,
+		HTTPAddr:                 getEnv("HTTP_ADDR", "0.0.0.0"),
+		HTTPPort:                 getEnvInt("HTTP_PORT", 8080),
+		GRPCAddr:                 getEnv("GRPC_ADDR", "0.0.0.0"),
+		GRPCPort:                 getEnvInt("GRPC_PORT", 9091),
+		GRPCMaxConcurrentStreams: getPositiveEnvInt("GRPC_MAX_CONCURRENT_STREAMS", 128),
+		GRPCMaxInFlightBatches:   getPositiveEnvInt("GRPC_MAX_IN_FLIGHT_BATCHES", 32),
+		OpenSkyClientID:          getEnv("OPENSKY_CLIENT_ID", ""),
+		OpenSkyClientSecret:      getEnv("OPENSKY_CLIENT_SECRET", ""),
+		OpenSkyUsername:          getEnv("OPENSKY_USERNAME", ""),
+		OpenSkyPassword:          getEnv("OPENSKY_PASSWORD", ""),
+		CredentialsFile:          getEnv("CREDENTIALS_FILE", "credentials.json"),
+		PollInterval:             getEnvDuration("POLL_INTERVAL", 10*time.Second),
+		EnableIngestion:          getEnvBool("ENABLE_INGESTION", true),
+		Edge:                     edgeCfg,
 	}
 
 	// Try loading credentials.json if OAuth2 env vars are not set
@@ -105,9 +109,9 @@ func loadConfig() Config {
 		log.Println("OpenSky auth: anonymous (rate limited to 400 credits/day)")
 	}
 
-	log.Printf("Edge configuration: mode=%s memory_limit=%dMB gc=%d%% retention=%dh compression=%v",
+	log.Printf("Edge configuration: mode=%s memory_limit=%dMB gc=%d%% retention=%dh",
 		cfg.Edge.MemoryMode, cfg.Edge.MemoryLimitMB, cfg.Edge.GCPercent,
-		cfg.Edge.DataRetentionHours, cfg.Edge.EnableCompression)
+		cfg.Edge.DataRetentionHours)
 
 	return cfg
 }
@@ -126,6 +130,14 @@ func getEnvInt(key string, defaultVal int) int {
 		}
 	}
 	return defaultVal
+}
+
+func getPositiveEnvInt(key string, defaultVal int) int {
+	value := getEnvInt(key, defaultVal)
+	if value <= 0 {
+		return defaultVal
+	}
+	return value
 }
 
 func getEnvBool(key string, defaultVal bool) bool {
@@ -445,12 +457,6 @@ func (a *App) IngestFlights(ctx context.Context, flights []models.Flight) (inges
 		airborne := total - onGround
 		a.query.RecordCongestion(apt.code, total, onGround, airborne)
 
-		// Feed congestion factor (0-1) into delay prediction system
-		congestionFactor := float64(total) / 30.0 // normalize: 30 flights = 1.0
-		if congestionFactor > 1.0 {
-			congestionFactor = 1.0
-		}
-		a.query.SetAirportCongestion(apt.code, congestionFactor)
 	}
 
 	return ingestion.BatchOutcome{Accepted: len(flights)}, nil
@@ -575,9 +581,16 @@ func (a *App) startGRPCServer() error {
 	a.grpcHealth.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	a.grpcHealth.SetServingStatus(flightedgev1.FlightIngestService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
 
-	a.grpcServer = grpc.NewServer()
+	a.grpcServer = grpc.NewServer(
+		grpc.MaxRecvMsgSize(4*1024*1024),
+		grpc.MaxConcurrentStreams(uint32(a.config.GRPCMaxConcurrentStreams)),
+	)
 	healthpb.RegisterHealthServer(a.grpcServer, a.grpcHealth)
-	ingestrpc.NewServer(a.IngestFlights, func() bool { return a.ready.Load() }).Register(a.grpcServer)
+	ingestrpc.NewServer(
+		a.IngestFlights,
+		func() bool { return a.ready.Load() },
+		ingestrpc.WithMaxInFlightBatches(a.config.GRPCMaxInFlightBatches),
+	).Register(a.grpcServer)
 
 	go func() {
 		log.Printf("gRPC ingestion server listening on %s", addr)
@@ -603,8 +616,6 @@ func (a *App) startHTTPServer() {
 	mux.HandleFunc("/api/v1/flights", a.handleFlights)
 	mux.HandleFunc("/api/v1/flights/", a.handleFlightByID)
 	mux.HandleFunc("/api/v1/airports/", a.handleAirportFlights)
-	mux.HandleFunc("/api/v1/delayed", a.handleDelayedFlights)
-	mux.HandleFunc("/api/v1/predict/", a.handlePredictDelay)
 	mux.HandleFunc("/api/v1/congestion", a.handleCongestion)
 	mux.HandleFunc("/api/v1/congestion/", a.handleCongestionByCode)
 	mux.HandleFunc("/api/v1/stats", a.handleStats)
@@ -795,60 +806,6 @@ func (a *App) handleAirportFlights(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (a *App) handleDelayedFlights(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	metrics.QueryRequests.Inc()
-
-	threshold := 15 * time.Minute
-	if v := r.URL.Query().Get("threshold"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			threshold = d
-		}
-	}
-
-	airline := r.URL.Query().Get("airline")
-
-	maxResults := 100
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			maxResults = n
-		}
-	}
-
-	result := a.query.GetDelayedFlights(threshold, airline, maxResults)
-	metrics.QueryLatency.Observe(time.Since(start).Seconds())
-
-	respondJSON(w, map[string]interface{}{
-		"threshold": threshold.String(),
-		"airline":   airline,
-		"flights":   result.Flights,
-		"count":     len(result.Flights),
-		"total":     result.Total,
-		"elapsed":   result.Elapsed.String(),
-	})
-}
-
-func (a *App) handlePredictDelay(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	metrics.QueryRequests.Inc()
-
-	flightID := r.URL.Path[len("/api/v1/predict/"):]
-	if flightID == "" {
-		http.Error(w, "flight ID required", http.StatusBadRequest)
-		return
-	}
-
-	pred, ok := a.query.PredictDelay(flightID)
-	metrics.QueryLatency.Observe(time.Since(start).Seconds())
-
-	if !ok {
-		http.Error(w, "flight not found", http.StatusNotFound)
-		return
-	}
-
-	respondJSON(w, pred)
-}
-
 func (a *App) handleCongestion(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	metrics.QueryRequests.Inc()
@@ -924,7 +881,6 @@ func (a *App) handleStats(w http.ResponseWriter, r *http.Request) {
 			"gc_percent":      a.config.Edge.GCPercent,
 			"retention_hours": a.config.Edge.DataRetentionHours,
 			"max_nodes":       a.config.Edge.MaxNodes,
-			"compression":     a.config.Edge.EnableCompression,
 			"degradation":     a.config.Edge.EnableDegradation,
 		},
 	}

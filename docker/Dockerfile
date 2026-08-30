@@ -36,6 +36,12 @@ RUN go build \
     -o /bin/flightedge \
     ./cmd/flightedge/
 
+RUN go build \
+    -ldflags="-s -w" \
+    -trimpath \
+    -o /bin/flightedge-collector \
+    ./cmd/flightedge-collector/
+
 # ------------------------------------------------------------------------------
 # Stage 2: Runtime (minimal)
 # ------------------------------------------------------------------------------
@@ -113,6 +119,23 @@ RUN apk add --no-cache \
     strace
 
 USER flightedge
+
+# ------------------------------------------------------------------------------
+# Collector runtime. This target keeps the edge process separately deployable
+# from the core HTTP/query service.
+# ------------------------------------------------------------------------------
+FROM runtime AS collector
+
+COPY --from=builder /bin/flightedge-collector /usr/local/bin/flightedge-collector
+
+ENV FLIGHTEDGE_CORE_GRPC_ADDR=flightedge:9091 \
+    COLLECTOR_METRICS_ADDR=:9092 \
+    OUTBOUND_QUEUE_CAPACITY=64 \
+    DELIVERY_TIMEOUT=10s
+
+EXPOSE 9092
+
+ENTRYPOINT ["flightedge-collector"]
 
 # ------------------------------------------------------------------------------
 # Default target

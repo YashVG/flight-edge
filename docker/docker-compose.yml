@@ -33,7 +33,7 @@ services:
     
     ports:
       - "8080:8080"
-      - "9091:9091"
+      - "127.0.0.1:9091:9091"
     
     environment:
       # Server configuration
@@ -51,17 +51,13 @@ services:
       - OPENSKY_PASSWORD=${OPENSKY_PASSWORD:-}
       
       # Ingestion settings
-      - ENABLE_INGESTION=${ENABLE_INGESTION:-true}
+      - ENABLE_INGESTION=${ENABLE_INGESTION:-false}
       - POLL_INTERVAL=${POLL_INTERVAL:-10s}
       
       # Performance tuning for edge constraints
       - GOMAXPROCS=1
       - GOGC=50
       - GOMEMLIMIT=450MiB
-    
-    volumes:
-      - ./config:/app/config:ro
-      - flightedge-data:/app/data
     
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -78,6 +74,41 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Enable the edge-to-core topology with:
+  # docker compose --profile collectors up --build --scale collector=3
+  # Each replica gets a distinct hostname, which becomes its collector ID.
+  collector:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: collector
+    image: flightedge-collector:latest
+    profiles:
+      - collectors
+    restart: unless-stopped
+    environment:
+      - FLIGHTEDGE_CORE_GRPC_ADDR=flightedge:9091
+      - POLL_INTERVAL=${COLLECTOR_POLL_INTERVAL:-10s}
+      - BATCH_SIZE=${COLLECTOR_BATCH_SIZE:-100}
+      - OUTBOUND_QUEUE_CAPACITY=${OUTBOUND_QUEUE_CAPACITY:-64}
+      - DELIVERY_TIMEOUT=${DELIVERY_TIMEOUT:-10s}
+      - COLLECTOR_METRICS_ADDR=:9092
+      - OPENSKY_CLIENT_ID=${OPENSKY_CLIENT_ID:-}
+      - OPENSKY_CLIENT_SECRET=${OPENSKY_CLIENT_SECRET:-}
+    mem_limit: 192m
+    cpus: 0.25
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9092/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - flightedge-net
+    depends_on:
+      flightedge:
+        condition: service_healthy
 
   # ----------------------------------------------------------------------------
   # Prometheus (Metrics Collection)
@@ -156,6 +187,5 @@ networks:
 # Volumes
 # ------------------------------------------------------------------------------
 volumes:
-  flightedge-data:
   prometheus-data:
   grafana-data:

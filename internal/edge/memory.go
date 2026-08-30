@@ -151,16 +151,7 @@ func (m *MemoryMonitor) ForceGC() {
 }
 
 func (m *MemoryMonitor) monitorLoop(ctx context.Context) {
-	// Check interval based on memory mode
-	interval := 5 * time.Second
-	switch m.config.MemoryMode {
-	case MemoryModeAggressive:
-		interval = 2 * time.Second
-	case MemoryModeReduced:
-		interval = 3 * time.Second
-	}
-
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for {

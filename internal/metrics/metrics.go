@@ -319,10 +319,19 @@ var (
 	HTTPLatency  = defaultRegistry.Histogram("flightedge_http_latency_seconds", "HTTP request latency", []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1})
 
 	// gRPC ingestion metrics
-	GRPCIngestBatches  = defaultRegistry.Counter("flightedge_grpc_ingest_batches_total", "Total gRPC ingestion batches acknowledged")
-	GRPCIngestFlights  = defaultRegistry.Counter("flightedge_grpc_ingest_flights_total", "Flights accepted through gRPC ingestion")
-	GRPCIngestRejected = defaultRegistry.Counter("flightedge_grpc_ingest_rejected_flights_total", "Flights rejected through gRPC ingestion")
-	GRPCIngestLatency  = defaultRegistry.Histogram("flightedge_grpc_ingest_latency_seconds", "gRPC ingestion batch latency", []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1})
+	GRPCIngestBatches    = defaultRegistry.Counter("flightedge_grpc_ingest_batches_total", "Total gRPC ingestion batches acknowledged")
+	GRPCIngestFlights    = defaultRegistry.Counter("flightedge_grpc_ingest_flights_total", "Flights accepted through gRPC ingestion")
+	GRPCIngestRejected   = defaultRegistry.Counter("flightedge_grpc_ingest_rejected_flights_total", "Flights rejected through gRPC ingestion")
+	GRPCIngestLatency    = defaultRegistry.Histogram("flightedge_grpc_ingest_latency_seconds", "gRPC ingestion batch latency", []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1})
+	GRPCIngestOverloaded = defaultRegistry.Counter("flightedge_grpc_ingest_overloaded_batches_total", "Batches deliberately shed because the core admission limit was reached")
+	GRPCIngestActive     = defaultRegistry.Gauge("flightedge_grpc_ingest_active_batches", "Batches currently admitted to the core")
+
+	// Collector delivery metrics make the edge-side loss and retry policy visible.
+	CollectorQueuedBatches    = defaultRegistry.Counter("flightedge_collector_batches_queued_total", "Batches accepted into the collector delivery queue")
+	CollectorDeliveredBatches = defaultRegistry.Counter("flightedge_collector_batches_delivered_total", "Collector batches acknowledged by the core")
+	CollectorDroppedBatches   = defaultRegistry.Counter("flightedge_collector_batches_dropped_total", "Collector batches dropped because the queue was full or delivery retries were exhausted")
+	CollectorRetries          = defaultRegistry.Counter("flightedge_collector_delivery_retries_total", "Collector delivery retry attempts")
+	CollectorQueueDepth       = defaultRegistry.Gauge("flightedge_collector_queue_depth", "Batches waiting for delivery to the core")
 
 	// System metrics
 	ActiveConnections = defaultRegistry.Gauge("flightedge_active_connections", "Number of active connections")

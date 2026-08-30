@@ -28,6 +28,17 @@ scrape_configs:
     scrape_interval: 10s
     scrape_timeout: 5s
 
+  # Compose resolves every scaled collector replica. Each collector exposes
+  # queue, retry, delivery, and drop metrics on its private metrics port.
+  - job_name: 'flightedge-collector'
+    dns_sd_configs:
+      - names: ['collector']
+        type: A
+        port: 9092
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+
   # Prometheus self-monitoring
   - job_name: 'prometheus'
     static_configs:

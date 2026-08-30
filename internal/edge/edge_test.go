@@ -33,9 +33,6 @@ func TestReducedConfig(t *testing.T) {
 	if cfg.GCPercent != 50 {
 		t.Errorf("expected 50%% GC, got %d", cfg.GCPercent)
 	}
-	if !cfg.SmallBuffers {
-		t.Error("expected SmallBuffers=true")
-	}
 }
 
 func TestAggressiveConfig(t *testing.T) {
@@ -46,9 +43,6 @@ func TestAggressiveConfig(t *testing.T) {
 	}
 	if cfg.GCPercent != 20 {
 		t.Errorf("expected 20%% GC, got %d", cfg.GCPercent)
-	}
-	if !cfg.EnableCompression {
-		t.Error("expected EnableCompression=true")
 	}
 	if !cfg.EnableDegradation {
 		t.Error("expected EnableDegradation=true")
@@ -62,7 +56,6 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("GC_PERCENT", "30")
 	t.Setenv("DATA_RETENTION_HOURS", "4")
 	t.Setenv("MAX_NODES", "5000")
-	t.Setenv("ENABLE_COMPRESSION", "true")
 	t.Setenv("ENABLE_DEGRADATION", "true")
 
 	cfg := LoadFromEnv()
@@ -81,9 +74,6 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if cfg.MaxNodes != 5000 {
 		t.Errorf("expected 5000 max nodes, got %d", cfg.MaxNodes)
-	}
-	if !cfg.EnableCompression {
-		t.Error("expected EnableCompression=true")
 	}
 	if !cfg.EnableDegradation {
 		t.Error("expected EnableDegradation=true")
@@ -285,142 +275,6 @@ func TestNodeLimitEnforcer(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Compression Tests
-// ---------------------------------------------------------------------------
-
-func TestCompressDecompress(t *testing.T) {
-	props := PropertyMap{
-		"string_val": "hello world",
-		"float_val":  123.456,
-		"int_val":    42,
-		"bool_val":   true,
-	}
-
-	// Compress
-	compressed, err := Compress(props)
-	if err != nil {
-		t.Fatalf("compress failed: %v", err)
-	}
-
-	if !compressed.Compressed {
-		t.Error("expected Compressed=true")
-	}
-	if len(compressed.Data) == 0 {
-		t.Error("expected non-empty data")
-	}
-
-	// Decompress
-	decompressed, err := Decompress(compressed)
-	if err != nil {
-		t.Fatalf("decompress failed: %v", err)
-	}
-
-	// Verify values
-	if decompressed["string_val"] != "hello world" {
-		t.Errorf("string_val mismatch: %v", decompressed["string_val"])
-	}
-	if decompressed["float_val"] != 123.456 {
-		t.Errorf("float_val mismatch: %v", decompressed["float_val"])
-	}
-}
-
-func TestCompressEmpty(t *testing.T) {
-	compressed, err := Compress(PropertyMap{})
-	if err != nil {
-		t.Fatalf("compress empty failed: %v", err)
-	}
-
-	if compressed.Compressed {
-		t.Error("expected empty to not be marked compressed")
-	}
-}
-
-func TestCompressBytes(t *testing.T) {
-	original := []byte("This is some test data that should compress well. " +
-		"Repeated content helps compression. Repeated content helps compression.")
-
-	compressed, err := CompressBytes(original)
-	if err != nil {
-		t.Fatalf("compress bytes failed: %v", err)
-	}
-
-	// Should be smaller than original (well-compressible data)
-	if len(compressed) >= len(original) {
-		t.Logf("compressed size (%d) not smaller than original (%d) - may vary", len(compressed), len(original))
-	}
-
-	// Decompress and verify
-	decompressed, err := DecompressBytes(compressed)
-	if err != nil {
-		t.Fatalf("decompress bytes failed: %v", err)
-	}
-
-	if string(decompressed) != string(original) {
-		t.Error("decompressed data doesn't match original")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Startup Optimizer Tests
-// ---------------------------------------------------------------------------
-
-func TestStartupOptimizer(t *testing.T) {
-	cfg := DefaultConfig()
-	optimizer := NewStartupOptimizer(cfg)
-
-	taskRan := false
-	optimizer.AddTask(StartupTask{
-		Name:     "test-task",
-		Phase:    PhaseSeedData,
-		Priority: 1,
-		Fn: func(ctx context.Context) error {
-			taskRan = true
-			return nil
-		},
-	})
-
-	ctx := context.Background()
-	err := optimizer.Run(ctx)
-	if err != nil {
-		t.Fatalf("startup failed: %v", err)
-	}
-
-	if !optimizer.IsReady() {
-		t.Error("expected optimizer to be ready")
-	}
-
-	if !taskRan {
-		t.Error("expected test task to run")
-	}
-
-	stats := optimizer.Stats()
-	if !stats.Ready {
-		t.Error("expected stats.Ready=true")
-	}
-}
-
-func TestStartupPhaseString(t *testing.T) {
-	tests := []struct {
-		phase    StartupPhase
-		expected string
-	}{
-		{PhaseInit, "init"},
-		{PhaseLoadConfig, "config"},
-		{PhaseInitMemory, "memory"},
-		{PhaseSeedData, "seed"},
-		{PhaseBuildIndexes, "indexes"},
-		{PhaseStartServices, "services"},
-		{PhaseReady, "ready"},
-	}
-
-	for _, tt := range tests {
-		if tt.phase.String() != tt.expected {
-			t.Errorf("expected %s, got %s", tt.expected, tt.phase.String())
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Integration Tests
 // ---------------------------------------------------------------------------
 
@@ -445,48 +299,6 @@ func TestEdgeConfigIntegration(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Benchmarks
 // ---------------------------------------------------------------------------
-
-func BenchmarkCompress(b *testing.B) {
-	props := PropertyMap{
-		"flight_id":   "ABC123",
-		"callsign":    "ACA456",
-		"latitude":    49.1234,
-		"longitude":   -123.4567,
-		"altitude":    35000.0,
-		"velocity":    450.0,
-		"heading":     180.0,
-		"on_ground":   false,
-		"origin":      "CYVR",
-		"destination": "CYYZ",
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = Compress(props)
-	}
-}
-
-func BenchmarkDecompress(b *testing.B) {
-	props := PropertyMap{
-		"flight_id":   "ABC123",
-		"callsign":    "ACA456",
-		"latitude":    49.1234,
-		"longitude":   -123.4567,
-		"altitude":    35000.0,
-		"velocity":    450.0,
-		"heading":     180.0,
-		"on_ground":   false,
-		"origin":      "CYVR",
-		"destination": "CYYZ",
-	}
-
-	compressed, _ := Compress(props)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = Decompress(compressed)
-	}
-}
 
 func BenchmarkExpirationRecordNode(b *testing.B) {
 	cfg := DefaultConfig()

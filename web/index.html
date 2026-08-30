@@ -242,7 +242,6 @@
       <div class="logo">FLIGHT<span>EDGE</span></div>
       <nav style="display:flex;gap:4px;">
         <a href="/" style="color:#00d4ff;background:rgba(0,212,255,0.1);text-decoration:none;font-size:13px;padding:6px 12px;border-radius:6px;">Map</a>
-        <a href="/metrics.html" style="color:#888;text-decoration:none;font-size:13px;padding:6px 12px;border-radius:6px;transition:all 0.2s;" onmouseover="this.style.color='#e0e0e0';this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.color='#888';this.style.background='transparent'">Metrics</a>
       </nav>
     </div>
     <div class="status-bar">
@@ -447,7 +446,6 @@
             <div class="popup-row"><span class="label">Flights</span><span>${cong.flight_count} (${cong.on_ground} gnd / ${cong.airborne} air)</span></div>
             <div class="popup-row"><span class="label">Congestion</span><span><span class="congestion-level ${cong.level}">${cong.level}</span></span></div>
             <div class="popup-row"><span class="label">Trend</span><span class="trend-arrow ${trendClass}">${trendArrow} ${cong.trend}</span></div>
-            <div class="popup-row"><span class="label">Predicted</span><span><span class="congestion-level ${cong.predicted_level}">${cong.predicted_level}</span> (${cong.predicted_count} flights)</span></div>
             <div class="popup-row"><span class="label">Avg / Peak</span><span>${cong.avg_count} / ${cong.peak_count}</span></div>
           </div>
         ` : '';
@@ -671,10 +669,6 @@
       const top = airports.slice(0, 10);
       list.innerHTML = top.map(c => {
         const trendIcon = c.trend === 'increasing' ? '&#9650;' : c.trend === 'decreasing' ? '&#9660;' : '&#9654;';
-        const predictedHTML = c.trend !== 'stable'
-          ? `<div class="congestion-predicted">${c.predicted_count} in 10m &rarr; <span class="congestion-level ${c.predicted_level}" style="font-size:9px">${c.predicted_level}</span></div>`
-          : '';
-
         return `
           <li class="congestion-item" style="flex-wrap: wrap; cursor: pointer;" onclick="panTo(${AIRPORTS.find(a => a.code === c.code)?.lat || 0}, ${AIRPORTS.find(a => a.code === c.code)?.lon || 0})">
             <div style="display:flex; align-items:center; gap:6px; flex: 1;">
@@ -683,7 +677,6 @@
               <span class="congestion-level ${c.level}">${c.level}</span>
               <span class="trend-arrow ${c.trend}">${trendIcon}</span>
             </div>
-            ${predictedHTML}
           </li>
         `;
       }).join('');
