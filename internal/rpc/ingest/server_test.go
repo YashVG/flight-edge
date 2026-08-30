@@ -33,7 +33,7 @@ func newTestClient(t *testing.T, ready func() bool, ingest FlightIngestor, optio
 		_ = server.Serve(listener)
 	}()
 
-	conn, err := grpc.DialContext(context.Background(), "bufnet",
+	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 			return listener.Dial()
 		}),

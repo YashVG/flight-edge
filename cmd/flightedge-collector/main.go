@@ -127,7 +127,7 @@ func newSender(parentCtx context.Context, coreAddr, sourceID string) (*sender, e
 func newSenderForSession(parentCtx context.Context, coreAddr, sourceID, sessionID string) (*sender, error) {
 	// This client is intentionally plaintext for localhost and private-network
 	// development. Production remote collectors must use mTLS before exposure.
-	conn, err := grpc.Dial(
+	conn, err := grpc.NewClient(
 		coreAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultServiceConfig(flightIngestHealthServiceConfig),
