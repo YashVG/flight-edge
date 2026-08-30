@@ -30,8 +30,32 @@ curl http://localhost:8080/metrics
 ## How it works
 
 ```text
-OpenSky API → collector → bidirectional gRPC stream → core → HTTP query API
-                 queue        acknowledgements          metrics
+                         poll flight state
+       ┌────────────────────────────────┐
+       │           OpenSky API           │
+       └───────────────┬────────────────┘
+                       │
+       ┌───────────────▼────────────────┐
+       │  Edge collector (one or many)  │
+       │  - batches states               │
+       │  - keeps a bounded local queue  │
+       │  - adds session_id + sequence   │
+       └───────────────┬────────────────┘
+                       │  bidirectional gRPC
+      batch (sequence) │──────────────────────────────►
+                        ◄──────────────────────────────│ ACK + retry hint
+                       │  ACCEPTED / DUPLICATE /
+                       │  INVALID / OVERLOADED
+       ┌───────────────▼────────────────┐
+       │           FlightEdge core        │
+       │  - admission limit               │
+       │  - ordered, de-duplicated ingest │
+       │  - in-memory flight ontology     │
+       └───────────┬─────────────┬───────┘
+                   │             │
+          HTTP query API       /metrics
+                   │             │
+            API consumers   Prometheus/Grafana
 ```
 
 Each collector creates a `session_id` on startup and numbers batches within that session. The core accepts only the next sequence. A lost acknowledgement can be retried without applying the batch twice.
