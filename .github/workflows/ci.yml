@@ -208,6 +208,8 @@ jobs:
           context: .
           file: ./docker/Dockerfile
           push: false
+          # Make the image available to the runner's Docker smoke test.
+          load: true
           tags: flightedge:${{ github.sha }}
           build-args: |
             VERSION=${{ github.sha }}
