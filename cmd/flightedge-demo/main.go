@@ -55,7 +55,9 @@ func run(output io.Writer) error {
 	}
 	defer func() { _ = stream.CloseSend() }()
 
-	fmt.Fprintln(output, "Synthetic batches through the production gRPC handler; counting sink, no external feed.")
+	if _, err := fmt.Fprintln(output, "Synthetic batches through the production gRPC handler; counting sink, no external feed."); err != nil {
+		return err
+	}
 	cases := []struct {
 		label       string
 		session     string
@@ -87,8 +89,10 @@ func run(output io.Writer) error {
 		if ack.GetDisposition() != scenario.disposition || ack.GetSequence() != scenario.sequence || applied.Load() != scenario.applied {
 			return fmt.Errorf("%s: unexpected acknowledgement %v; applied=%d", scenario.label, ack, applied.Load())
 		}
-		fmt.Fprintf(output, "%-23s %-40s applied=%d\n", scenario.label, ack.GetDisposition(), applied.Load())
+		if _, err := fmt.Fprintf(output, "%-23s %-40s applied=%d\n", scenario.label, ack.GetDisposition(), applied.Load()); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintln(output, "PASS: 7 deliveries, 4 applied; duplicates and invalid/out-of-order batches did not reach the sink.")
-	return nil
+	_, err = fmt.Fprintln(output, "PASS: 7 deliveries, 4 applied; duplicates and invalid/out-of-order batches did not reach the sink.")
+	return err
 }
