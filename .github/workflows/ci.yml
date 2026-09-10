@@ -42,6 +42,9 @@ jobs:
       - name: Run tests
         run: go test -v -race -short -coverprofile=coverage.out ./...
 
+      - name: Verify offline protocol demo
+        run: make demo
+
       - name: Upload coverage
         uses: codecov/codecov-action@v7
         with:

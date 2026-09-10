@@ -34,6 +34,10 @@ build-optimized: ## Build with optimizations (smaller binary)
 run: build ## Build and run the application
 	./$(BUILD_DIR)/$(APP_NAME)
 
+.PHONY: demo
+demo: ## Verify delivery, duplicate retry, ordering, and restart with an offline gRPC demo
+	go run ./cmd/flightedge-demo
+
 run-core: ## Run a core that accepts remote collector batches
 	ENABLE_INGESTION=false go run ./cmd/flightedge
 

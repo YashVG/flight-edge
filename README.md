@@ -8,6 +8,23 @@ FlightEdge is a Go and gRPC ingestion gateway. It moves flight-state batches fro
 
 ## See it work
 
+Requires Go 1.22+ and Make. From a clone of this repository, run:
+
+```bash
+make demo
+```
+
+The demo sends seven synthetic batches through the production gRPC handler on
+an ephemeral loopback port. It verifies delivery, duplicate retry, out-of-order
+rejection, a new collector session, and recovery after malformed input. It exits
+with `PASS` and **four applied batches**, or returns a nonzero exit code on a mismatch.
+After Go dependencies are available, it needs no credentials or external service.
+
+This demonstrates the wire protocol with a counting sink. It does not run the
+ontology, OpenSky poller, or overload scenario; those paths have separate tests.
+
+### Run the core and live collector
+
 Start a core without its own OpenSky poller:
 
 ```bash
